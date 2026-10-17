@@ -1,5 +1,6 @@
 package com.repopilot.common.api;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 import java.time.Instant;
@@ -63,7 +64,8 @@ public record ApiResponse<T>(
                 RequestIdHolder.current(), Instant.now());
     }
 
-    /** 便于测试与文档示例：判断是否为成功响应。 */
+    /** 便于测试与文档示例：判断是否为成功响应（不参与 JSON 序列化，保持响应结构稳定）。 */
+    @JsonIgnore
     public boolean isSuccess() {
         return ErrorCode.OK.name().equals(code);
     }

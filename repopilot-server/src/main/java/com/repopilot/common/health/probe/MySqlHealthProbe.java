@@ -57,7 +57,7 @@ public class MySqlHealthProbe implements HealthProbe {
             return new ComponentHealth(name(), HealthStatus.UP, required(), detail, elapsedMillis(start));
         } catch (Exception ex) {
             log.warn("MySQL 健康检查失败: {}", ex.getMessage());
-            return new ComponentHealth(name(), HealthStatus.DOWN, required(), summarize(ex), elapsedMillis(start));
+            return new ComponentHealth(name(), HealthStatus.DOWN, required(), ProbeDetails.of(ex), elapsedMillis(start));
         }
     }
 
@@ -65,8 +65,4 @@ public class MySqlHealthProbe implements HealthProbe {
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
     }
 
-    private String summarize(Exception ex) {
-        String message = ex.getMessage();
-        return message == null || message.isBlank() ? ex.getClass().getSimpleName() : message;
-    }
 }
