@@ -1,37 +1,89 @@
 # 文档索引
 
-本目录存放 RepoPilot 的设计与实施文档。总纲为仓库根目录的 `project_design.md`
-（《RepoPilot 开发总手册 V1.0》），本目录按主题拆分细化。
+本目录是 **RepoPilot 唯一的设计基线**（来自设计包 V1.0，2026-10-17 并入）。
+根目录 `project_design.md`（《开发总手册 V1.0》）**已降级为历史草案**，仅作追溯；与本文档集冲突时以本目录为准。
 
-## 已完成
+## 阅读顺序
 
-| 文件 | 内容 | 产出任务 |
-| --- | --- | --- |
-| [`01-local-development.md`](./01-local-development.md) | 本地开发环境搭建、启动顺序、排障 | TASK-001 |
-| [`README.md`](./README.md) | 文档索引与规划（本文件） | TASK-001 |
+1. [`00-product-scope.md`](./00-product-scope.md) — 产品范围、V1 边界、交付阶段
+2. [`architecture/01-system-overview.md`](./architecture/01-system-overview.md) — 组件职责与调度分期
+3. [`reviews/task-002-delta.md`](./reviews/task-002-delta.md) — 相对早期草案的修订（为什么这样做）
+4. [`reviews/repository-alignment.md`](./reviews/repository-alignment.md) — 本仓库核对结果、实际版本与偏差
+5. [`reviews/design-merge-report.md`](./reviews/design-merge-report.md) — 设计包合并时的冲突清单与处置
 
-## 规划中（按总手册第 15 章，随对应 TASK 落地）
+## 全局架构
 
-| 文件 | 内容 | 计划任务 |
-| --- | --- | --- |
-| `00-project-overview.md` | 项目概览与产品边界 | TASK-002 |
-| `01-product-requirements.md` | 产品需求 | TASK-002 |
-| `02-system-architecture.md` | 系统架构与模块边界 | TASK-002 |
-| `03-domain-model.md` | 领域模型（Agent/Dataset/Experiment/Run/Trace…） | TASK-002 |
-| `04-database-design.md` | 表结构与约束 | TASK-002 |
-| `05-api-contract.md` | REST 契约与分页/错误码规范 | TASK-002 |
-| `06-event-contract.md` | RabbitMQ 事件与消息 Schema | TASK-004 / TASK-011 |
-| `07-online-evaluation.md` | 在线评测流程与 Mock Runner 规范 | TASK-004 |
-| `08-offline-evaluation.md` | 离线导入与标准化 | TASK-005 |
-| `09-trace-pipeline.md` | TraceEvent 规范、存储与对比 | TASK-006 |
-| `10-evaluation-engine.md` | 算子协议与执行引擎 | TASK-007 |
-| `11-annotation-workflow.md` | 标注流转与归因 | TASK-009 |
-| `12-experiment-analysis.md` | 指标口径与版本回归 | TASK-010 |
-| `13-frontend-specification.md` | 前端页面与交互规范 | TASK-003 起逐步补充 |
-| `14-deployment-guide.md` | 部署与发布 | TASK-013 |
-| `15-testing-strategy.md` | 测试分层与验收用例 | TASK-013 |
+| 文件 | 内容 |
+| --- | --- |
+| [`architecture/01-system-overview.md`](./architecture/01-system-overview.md) | 技术边界、组件职责、工程组织、数据流、运维可见性 |
+| [`architecture/02-domain-model.md`](./architecture/02-domain-model.md) | 领域约束、版本不可变、样本身份、Attempt 归属 |
+| [`architecture/03-database-design.md`](./architecture/03-database-design.md) | 26 张表的生成视图（**唯一来源是 `contracts/database-schema.json`**） |
+| [`architecture/04-api-contract.md`](./architecture/04-api-contract.md) | `/api/v1`、`/internal/v1`、统一响应、错误码、分页、幂等、Worker 协议 |
+| [`architecture/05-event-contract.md`](./architecture/05-event-contract.md) | 事件信封与轨迹结构语义 |
+| [`architecture/06-reliability-design.md`](./architecture/06-reliability-design.md) | 状态机、租约、重试、封口、恢复 |
+
+## 模块规范
+
+| 文件 | 覆盖任务 |
+| --- | --- |
+| [`modules/online-evaluation.md`](./modules/online-evaluation.md) | TASK-004 |
+| [`modules/offline-evaluation.md`](./modules/offline-evaluation.md) | TASK-005 |
+| [`modules/trace-pipeline.md`](./modules/trace-pipeline.md) | TASK-006 |
+| [`modules/evaluation-engine.md`](./modules/evaluation-engine.md) | TASK-007 起 |
+| [`modules/annotation-system.md`](./modules/annotation-system.md) | TASK-009 |
+| [`modules/experiment-analysis.md`](./modules/experiment-analysis.md) | TASK-010 |
+| [`modules/frontend-design.md`](./modules/frontend-design.md) | TASK-003 起逐步落地 |
+
+## 机器可读契约
+
+| 文件 | 用途 |
+| --- | --- |
+| [`contracts/database-schema.json`](./contracts/database-schema.json) | 数据库字段/索引/外键/CHECK 的**唯一来源**，先改此文件再生成迁移与文档 |
+| [`contracts/openapi-common.yaml`](./contracts/openapi-common.yaml) | 公共响应、错误、分页、ULID 组件（只含公共部分） |
+| [`contracts/event-envelope.schema.json`](./contracts/event-envelope.schema.json) | 事件信封 |
+| [`contracts/trace-event.schema.json`](./contracts/trace-event.schema.json) | 轨迹事件 |
+| [`contracts/dataset-case.schema.json`](./contracts/dataset-case.schema.json) | 数据集样本 |
+| [`contracts/offline-run.schema.json`](./contracts/offline-run.schema.json) | 离线导入记录 |
+
+## 开发与运行
+
+| 文件 | 性质 |
+| --- | --- |
+| [`development-guide.md`](./development-guide.md) | **通用规范**：测试层级、CI、配置清单、备份恢复、性能方法 |
+| [`01-local-development.md`](./01-local-development.md) | **本仓库 Runbook**：真实端口、启动顺序、实测命令、排障 |
+| [`reviews/design-validation.md`](./reviews/design-validation.md) | 设计包自检报告 |
+
+## 任务与样例
+
+- 任务范围与交付格式：`tasks/README.md`（12 个 TASK 的唯一任务表）
+- 不可运行样例：`examples/`（导入记录、事件信封、轨迹事件，均不含真实密钥）
+- 设计自检工具：`tools/verify_design.py`
+
+## 已废止的旧规划
+
+合并前 `docs/README.md` 曾在根目录规划一套 `03~15` 编号文档，与设计包路径重复。现统一按下表归位，**不再新建同名文件**：
+
+| 旧规划文件 | 现行位置 |
+| --- | --- |
+| `00-project-overview.md` / `01-product-requirements.md` | `00-product-scope.md` + `architecture/01-system-overview.md` |
+| `02-system-architecture.md` | `architecture/01-system-overview.md` |
+| `03-domain-model.md` | `architecture/02-domain-model.md` |
+| `04-database-design.md` | `architecture/03-database-design.md` + `contracts/database-schema.json` |
+| `05-api-contract.md` | `architecture/04-api-contract.md` |
+| `06-event-contract.md` | `architecture/05-event-contract.md` + `contracts/*.schema.json` |
+| `07-online-evaluation.md` | `modules/online-evaluation.md` |
+| `08-offline-evaluation.md` | `modules/offline-evaluation.md` |
+| `09-trace-pipeline.md` | `modules/trace-pipeline.md` |
+| `10-evaluation-engine.md` | `modules/evaluation-engine.md` |
+| `11-annotation-workflow.md` | `modules/annotation-system.md` |
+| `12-experiment-analysis.md` | `modules/experiment-analysis.md` |
+| `13-frontend-specification.md` | `modules/frontend-design.md` |
+| `14-deployment-guide.md` | `development-guide.md` §本地部署 + `01-local-development.md` |
+| `15-testing-strategy.md` | `development-guide.md` §测试层级 + §CI |
 
 ## 约定
 
-- 文档与代码必须同步更新：修改公共 API / 消息格式 / 表结构时，同一次提交内更新对应文档。
-- 未实现的能力不要在文档中描述为「已支持」；规划中的内容统一标注所属 TASK。
+1. **唯一来源**：字段改 `contracts/database-schema.json`；路由与响应改 `architecture/04-api-contract.md`；任务范围改 `tasks/`。其余文档只引用，不复制字段表。
+2. **文档与代码同步**：改公共 API / 事件格式 / 表结构时，同一次提交内更新对应文档与 Schema。
+3. **不把设计写成成果**：未实现的能力标注所属 TASK，不写"已支持"。
+4. 设计自检：`python tools/verify_design.py`（需 `tools/requirements-design.txt` 依赖），检查表数、Schema、样例与文档链接。

@@ -4,6 +4,17 @@
 - 上游依据：`project_design.md` 第 12 章任务拆分
 - 范围：只搭建基础工程，**不实现任何业务功能**
 
+## 0. 仓库对齐核对（设计包 V1.0 要求）
+
+设计包 `tasks/TASK-001.md` 把 TASK-001 定义为"工程现状核对与基础初始化"，交付物为对齐报告。
+本仓库该核对已执行，报告见：
+
+- [`docs/reviews/repository-alignment.md`](../docs/reviews/repository-alignment.md)：实际目录、版本、命令、Flyway 历史、与设计包的 10 项偏差
+- [`docs/reviews/design-merge-report.md`](../docs/reviews/design-merge-report.md)：设计包并入时的文件冲突、文档去重、契约差异清单
+
+核对结论：**工程已初始化，不重复初始化**；数据库仅有 V1 空白基线，TASK-002 从 V2 起新增迁移。
+设计包的"现状核对"语义已由上述报告吸收，不再单独保留一份同编号任务文档。
+
 ## 1. 目标
 
 | 编号 | 目标 | 结果 |
@@ -117,5 +128,10 @@ set -a && source ../.env && set +a
 
 ## 7. 下一阶段依赖
 
-TASK-002（Flyway 数据库结构、统一实体与 API 基础）需要：本任务基础设施稳定运行、
-`/api/health` 返回 `UP`、`flyway_schema_history` 中存在 version=1 记录。
+TASK-002（数据库领域模型、Flyway 与统一 API 基础）需要：
+
+1. 本任务基础设施稳定运行、`/api/health` 返回 `UP`、`flyway_schema_history` 中存在 version=1 记录。
+2. 先执行 [`docs/reviews/design-merge-report.md`](../docs/reviews/design-merge-report.md) §5 的 12 项契约对齐
+   （`errors`→`details`、错误码重命名、ULID requestId、分页与幂等组件、模块划分 7→8），
+   其中 §8 的 3 个待决项需项目负责人拍板。
+3. 迁移从 **V2** 起新增，不修改 V1。

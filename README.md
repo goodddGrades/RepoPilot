@@ -68,16 +68,23 @@ RepoPilot/
 ├── deploy/
 │   ├── docker-compose.yml            # MySQL / RabbitMQ / MinIO / Redis
 │   └── README.md                     # 基础设施配置说明与排障
-├── docs/
-│   ├── README.md                     # 文档索引与规划
-│   └── 01-local-development.md       # 本地开发环境
-├── tasks/
-│   └── TASK-001.md                   # 本阶段任务说明与验收记录
+├── docs/                             # 设计基线（唯一来源）
+│   ├── README.md                     # 文档索引与阅读顺序
+│   ├── 00-product-scope.md           # 产品范围与 V1 边界
+│   ├── architecture/                 # 01~06 全局架构规范
+│   ├── modules/                      # 在线/离线/轨迹/评测/标注/报告/前端
+│   ├── contracts/                    # 数据库字典 + 5 份 JSON Schema/OpenAPI
+│   ├── reviews/                      # 设计校验、对齐报告、合并报告
+│   ├── development-guide.md          # 通用开发/测试/部署规范
+│   └── 01-local-development.md       # 本仓库 Runbook
+├── tasks/                            # TASK-001~012（任务范围与验收）
+├── examples/                         # 规范样例（不含真实密钥）
+├── tools/verify_design.py            # 设计一致性自检
 ├── AGENTS.md                         # 项目级开发约束（必读）
 ├── .env.example                      # 环境变量模板（无真实凭据）
 ├── .gitignore
 ├── README.md
-└── project_design.md                 # 开发总手册 V1.0
+└── project_design.md                 # 历史草案（已被 docs/ 取代）
 ```
 
 ---
@@ -261,10 +268,17 @@ docker compose --env-file .env -f deploy/docker-compose.yml down -v
 
 ## 7. 文档
 
-- [`AGENTS.md`](./AGENTS.md)：项目级开发约束（架构红线、命令、交付要求）
+- [`AGENTS.md`](./AGENTS.md)：项目级开发约束（权威顺序、架构红线、命令、交付要求）
+- [`docs/README.md`](./docs/README.md)：**设计基线索引**（架构 / 模块 / 契约 / 评审）
 - [`docs/01-local-development.md`](./docs/01-local-development.md)：环境搭建、启动顺序、排障
+- [`docs/development-guide.md`](./docs/development-guide.md)：测试层级、CI、配置、备份、性能规范
 - [`deploy/README.md`](./deploy/README.md)：基础设施端口、健康检查、持久化与重置
 - [`tasks/TASK-001.md`](./tasks/TASK-001.md)：本阶段交付清单与验收记录
-- [`project_design.md`](./project_design.md)：开发总手册 V1.0（产品范围、领域模型、任务拆分）
+- [`docs/reviews/repository-alignment.md`](./docs/reviews/repository-alignment.md)：仓库对齐核对（实际版本、命令、偏差）
+- [`docs/reviews/design-merge-report.md`](./docs/reviews/design-merge-report.md)：设计包合并的冲突清单与处置
+- `project_design.md`：历史草案，已被 `docs/` 取代，无约束力
 
-下一阶段：TASK-002（Flyway 数据库结构、统一实体与 API 基础）——本仓库当前**未包含**其任何实现。
+设计包自检：`python tools/verify_design.py`（依赖见 `tools/requirements-design.txt`）。
+
+下一阶段：TASK-002（数据库领域模型、Flyway 与统一 API 基础）——本仓库当前**未包含**其任何实现；
+开前需先处理 [`docs/reviews/design-merge-report.md`](./docs/reviews/design-merge-report.md) §5 的契约对齐项。
