@@ -1,7 +1,8 @@
 # TASK-001 · Monorepo、Docker Compose 与三端基础工程
 
 - 状态：**已完成**（2026-10-17）
-- 上游依据：`project_design.md` 第 12 章任务拆分
+- 上游依据：设计基线 `docs/`（`00-product-scope.md` 交付阶段 + `architecture/01-system-overview.md` 工程组织）；
+  早期草案 `project_design.md` 第 12 章仅作追溯
 - 范围：只搭建基础工程，**不实现任何业务功能**
 
 ## 0. 仓库对齐核对（设计包 V1.0 要求）
