@@ -10,7 +10,7 @@ import org.springframework.http.HttpStatus;
  */
 public enum ErrorCode {
 
-    OK(HttpStatus.OK, "OK"),
+    OK(HttpStatus.OK, "success"),
 
     VALIDATION_ERROR(HttpStatus.BAD_REQUEST, "请求参数校验失败"),
     BAD_REQUEST(HttpStatus.BAD_REQUEST, "请求格式不正确"),

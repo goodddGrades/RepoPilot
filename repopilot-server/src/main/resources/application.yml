@@ -53,6 +53,14 @@ management:
       show-details: always
       probes:
         enabled: true
+      # 探针分组显式声明，避免依赖指标被默认规则带进 liveness：
+      # liveness 只反映进程自身（JVM/应用上下文），外部依赖故障不得触发容器重启；
+      # readiness 反映“能否对外提供业务请求”，必须包含真实外部依赖。
+      group:
+        liveness:
+          include: livenessState,ping
+        readiness:
+          include: readinessState,db,rabbit
   info:
     env:
       enabled: true

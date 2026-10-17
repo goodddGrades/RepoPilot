@@ -22,6 +22,7 @@ class ApiResponseTest {
         ApiResponse<String> response = ApiResponse.ok("payload");
 
         assertThat(response.code()).isEqualTo("OK");
+        assertThat(response.message()).isEqualTo("success");
         assertThat(response.isSuccess()).isTrue();
         assertThat(response.data()).isEqualTo("payload");
         assertThat(response.errors()).isNull();

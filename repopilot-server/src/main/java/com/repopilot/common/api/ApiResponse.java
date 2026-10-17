@@ -13,7 +13,7 @@ import java.util.List;
  * <pre>
  * {
  *   "code": "OK",
- *   "message": "OK",
+ *   "message": "success",
  *   "data": { ... },
  *   "errors": [ { "field": "name", "message": "不能为空" } ],
  *   "requestId": "6f1b9c0e...",
