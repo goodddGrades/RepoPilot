@@ -1,0 +1,5 @@
+# 开发依赖（含测试）：pip install -r requirements-dev.txt
+-r requirements.txt
+
+pytest==8.4.2
+httpx==0.28.1
