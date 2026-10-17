@@ -52,14 +52,27 @@ REDIS_IMAGE=registry.example.com/redis:7.2.5-alpine
 | --- | --- | --- |
 | MySQL | `mysqladmin ping -u${MYSQL_USER} -p***` | 业务账号可登录即视为就绪，`start_period` 40s 覆盖初始化耗时 |
 | RabbitMQ | `rabbitmq-diagnostics -q ping` | 官方推荐的存活检查 |
-| MinIO | `mc ready local` | 依赖镜像内置的 `mc` 客户端 |
+| MinIO | `mc ready local` | 依赖镜像内置的 `mc` 客户端；**尚未在本机实跑验证**（Docker 守护进程不可用） |
 | Redis | `redis-cli -a *** ping` | 带认证的 PING |
 
-若 MinIO 镜像不含 `mc`（部分精简镜像），把健康检查改为：
+**MinIO 健康检查不确定项**：`mc` 是否存在于镜像内，必须实测，不能假设。启动容器后先执行：
 
-```yaml
-test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live || exit 1"]
+```bash
+docker compose --env-file .env -f deploy/docker-compose.yml exec minio mc --version
+# 若报 "executable file not found"，说明该镜像不含 mc，改用 HTTP 探活（见下）
 ```
+
+健康检查已支持用环境变量覆盖，无需改 `docker-compose.yml`：
+
+```bash
+# 方式一：镜像含 curl
+MINIO_HEALTHCHECK="curl -f http://127.0.0.1:9000/minio/health/live"
+# 方式二：镜像含 wget
+MINIO_HEALTHCHECK="wget -q -O- http://127.0.0.1:9000/minio/health/live"
+```
+
+写入 `.env` 后 `docker compose up -d` 即可生效。两种方式都不可用时（如 distroless 镜像），
+删掉该 healthcheck，改用外部探测，并把 `restart` 策略与日志告警作为兜底——不要伪造一个恒为 healthy 的探针。
 
 ## 5. 数据持久化
 

@@ -90,8 +90,12 @@ services:
     volumes:
       - minio-data:/data
     healthcheck:
-      # MinIO 官方镜像自带 mc，用于判断实例是否已可服务
-      test: ["CMD", "mc", "ready", "local"]
+      # 官方镜像内置 mc（MinIO 官方 compose 示例即用此命令）。
+      # 精简镜像若不含 mc，可改用环境变量覆盖，无需改本文件，例如：
+      #   MINIO_HEALTHCHECK="curl -f http://127.0.0.1:9000/minio/health/live"
+      #   MINIO_HEALTHCHECK="wget -q -O- http://127.0.0.1:9000/minio/health/live"
+      # 先用 `docker compose exec minio mc --version` 确认工具是否存在，不要凭空假设。
+      test: ["CMD-SHELL", "${MINIO_HEALTHCHECK:-mc ready local}"]
       interval: 15s
       timeout: 10s
       retries: 10
