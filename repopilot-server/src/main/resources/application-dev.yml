@@ -1,0 +1,53 @@
+# ---------------------------------------------------------------------------
+# 开发环境配置（dev）
+#
+# 连接信息全部来自环境变量，由仓库根目录 .env 提供：
+#   cp .env.example .env
+# 端口默认值与 deploy/docker-compose.yml 中的宿主机端口保持一致。
+#
+# 禁止在本文件中写死任何密码。
+# ---------------------------------------------------------------------------
+spring:
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:13306}/${MYSQL_DATABASE:repopilot}?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&characterEncoding=UTF-8&rewriteBatchedStatements=true
+    username: ${MYSQL_USER}
+    password: ${MYSQL_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      pool-name: repopilot-hikari
+      maximum-pool-size: 10
+      minimum-idle: 2
+      # 快速失败：基础设施未启动时不要挂起 30 秒
+      connection-timeout: 3000
+      validation-timeout: 2000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # 空库首次迁移即建立基线，不依赖已有 schema
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    # 生产安全：禁止通过应用执行 clean
+    clean-disabled: true
+    table: flyway_schema_history
+
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER}
+    password: ${RABBITMQ_PASSWORD}
+    virtual-host: ${RABBITMQ_VHOST:/}
+    connection-timeout: 5s
+    requested-heartbeat: 30s
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    # V1 不注册任何消费者与业务队列，拓扑在后续任务中按事件契约声明
+
+logging:
+  level:
+    com.repopilot: DEBUG
+    org.springframework.web: INFO
+    org.springframework.amqp: INFO
+    org.mybatis: INFO

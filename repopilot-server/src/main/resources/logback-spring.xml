@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  RepoPilot 日志配置
+
+  约定：
+    1. 开发环境输出彩色控制台日志，包含 requestId，便于与前端/接口响应中的 X-Request-Id 对齐；
+    2. 所有环境同时写入滚动文件 logs/repopilot-server.log，便于本地回溯；
+    3. 不打印完整 SQL 参数与凭据，避免日志泄露。
+-->
+<configuration scan="false">
+
+  <property name="APP_NAME" value="repopilot-server"/>
+  <property name="LOG_DIR" value="${LOG_DIR:-logs}"/>
+
+  <property name="CONSOLE_PATTERN"
+            value="%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] [%X{requestId:-no-request-id}] %logger{36} - %msg%n"/>
+  <property name="FILE_PATTERN"
+            value="%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] [%X{requestId:-no-request-id}] %logger{40} - %msg%n"/>
+
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>${CONSOLE_PATTERN}</pattern>
+      <charset>UTF-8</charset>
+    </encoder>
+  </appender>
+
+  <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>${LOG_DIR}/${APP_NAME}.log</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+      <fileNamePattern>${LOG_DIR}/${APP_NAME}.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+      <maxFileSize>20MB</maxFileSize>
+      <maxHistory>7</maxHistory>
+      <totalSizeCap>200MB</totalSizeCap>
+    </rollingPolicy>
+    <encoder>
+      <pattern>${FILE_PATTERN}</pattern>
+      <charset>UTF-8</charset>
+    </encoder>
+  </appender>
+
+  <!-- 开发环境：控制台更详细 -->
+  <springProfile name="dev">
+    <logger name="com.repopilot" level="DEBUG"/>
+    <logger name="org.springframework.web.servlet.DispatcherServlet" level="INFO"/>
+    <logger name="com.zaxxer.hikari" level="INFO"/>
+    <root level="INFO">
+      <appender-ref ref="CONSOLE"/>
+      <appender-ref ref="FILE"/>
+    </root>
+  </springProfile>
+
+  <!-- 测试环境：只打控制台，避免污染仓库 -->
+  <springProfile name="test">
+    <appender name="TEST_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+      <encoder>
+        <pattern>${FILE_PATTERN}</pattern>
+        <charset>UTF-8</charset>
+      </encoder>
+    </appender>
+    <root level="INFO">
+      <appender-ref ref="TEST_CONSOLE"/>
+    </root>
+  </springProfile>
+
+  <!-- 默认（含 prod）：文件 + 控制台 -->
+  <springProfile name="!dev &amp; !test">
+    <root level="INFO">
+      <appender-ref ref="CONSOLE"/>
+      <appender-ref ref="FILE"/>
+    </root>
+  </springProfile>
+
+</configuration>
