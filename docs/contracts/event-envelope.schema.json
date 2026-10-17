@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repopilot.local/schemas/event-envelope.schema.json",
+  "title": "event-envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "eventType",
+    "occurredAt",
+    "aggregateType",
+    "aggregateId",
+    "correlationId",
+    "payload"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "eventId": {
+      "type": "string",
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "eventType": {
+      "enum": [
+        "run.ready",
+        "evaluation.ready",
+        "run.finished",
+        "experiment.finished"
+      ]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "aggregateType": {
+      "enum": [
+        "RUN",
+        "EVALUATION_JOB",
+        "EXPERIMENT"
+      ]
+    },
+    "aggregateId": {
+      "type": "string",
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "correlationId": {
+      "type": "string",
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "run.ready"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "aggregateType": {
+            "const": "RUN"
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "runId"
+            ],
+            "properties": {
+              "runId": {
+                "type": "string",
+                "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "evaluation.ready"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "aggregateType": {
+            "const": "EVALUATION_JOB"
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "jobId"
+            ],
+            "properties": {
+              "jobId": {
+                "type": "string",
+                "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "run.finished"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "aggregateType": {
+            "const": "RUN"
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "runId"
+            ],
+            "properties": {
+              "runId": {
+                "type": "string",
+                "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "experiment.finished"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "aggregateType": {
+            "const": "EXPERIMENT"
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "experimentId"
+            ],
+            "properties": {
+              "experimentId": {
+                "type": "string",
+                "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

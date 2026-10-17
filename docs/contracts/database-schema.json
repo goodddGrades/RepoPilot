@@ -1,0 +1,2871 @@
+{
+  "schema_version": "1.0",
+  "engine": "InnoDB",
+  "charset": "utf8mb4",
+  "collation": "utf8mb4_bin",
+  "business_id_collation": "ascii_bin",
+  "tables": {
+    "agents": {
+      "description": "Agent身份，不持有运行密钥",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "code",
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "description": "唯一业务标识，大小写敏感"
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(128)",
+          "nullable": false,
+          "description": "名称"
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "nullable": true,
+          "description": "说明"
+        },
+        {
+          "name": "agent_type",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "MOCK或CODING等注册类型，服务层白名单"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "生命周期",
+          "default": "ACTIVE"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "code"
+        ]
+      ],
+      "indexes": [],
+      "checks": [
+        "status IN ('ACTIVE', 'ARCHIVED')"
+      ],
+      "foreign_keys": []
+    },
+    "agent_versions": {
+      "description": "发布后不可变的执行配置",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "agent_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属Agent"
+        },
+        {
+          "name": "version",
+          "type": "INT",
+          "nullable": false,
+          "description": "从1递增"
+        },
+        {
+          "name": "runner_type",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "Runner种类"
+        },
+        {
+          "name": "config_json",
+          "type": "JSON",
+          "nullable": false,
+          "description": "完整配置快照，仅含secretRef"
+        },
+        {
+          "name": "config_hash",
+          "type": "CHAR(64)",
+          "nullable": false,
+          "description": "规范化配置SHA256"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "版本状态",
+          "default": "DRAFT"
+        },
+        {
+          "name": "published_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "UTC发布时间"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "agent_id",
+          "version"
+        ]
+      ],
+      "indexes": [],
+      "checks": [
+        "version >= 1",
+        "runner_type IN ('MOCK', 'CODEX', 'CUSTOM')",
+        "status IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "agent_id"
+          ],
+          "references_table": "agents",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "datasets": {
+      "description": "数据集身份",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "code",
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "description": "唯一业务标识"
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(128)",
+          "nullable": false,
+          "description": "名称"
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "nullable": true,
+          "description": "说明"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "生命周期",
+          "default": "ACTIVE"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "code"
+        ]
+      ],
+      "indexes": [],
+      "checks": [
+        "status IN ('ACTIVE', 'ARCHIVED')"
+      ],
+      "foreign_keys": []
+    },
+    "dataset_versions": {
+      "description": "发布后固定样本集合",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "dataset_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属数据集"
+        },
+        {
+          "name": "version",
+          "type": "INT",
+          "nullable": false,
+          "description": "版本序号"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "状态",
+          "default": "DRAFT"
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "nullable": true,
+          "description": "说明"
+        },
+        {
+          "name": "content_hash",
+          "type": "CHAR(64)",
+          "nullable": true,
+          "description": "发布时生成，排序case_key后对完整样本集合求摘要"
+        },
+        {
+          "name": "published_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "发布时间"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "dataset_id",
+          "version"
+        ]
+      ],
+      "indexes": [],
+      "checks": [
+        "version >= 1",
+        "status IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "dataset_id"
+          ],
+          "references_table": "datasets",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "dataset_cases": {
+      "description": "版本内样本身份",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "dataset_version_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属版本"
+        },
+        {
+          "name": "case_key",
+          "type": "VARCHAR(128)",
+          "nullable": false,
+          "description": "版本内稳定key，大小写敏感"
+        },
+        {
+          "name": "task_type",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "任务类型，由注册表校验"
+        },
+        {
+          "name": "input_json",
+          "type": "JSON",
+          "nullable": false,
+          "description": "规范化任务输入"
+        },
+        {
+          "name": "expected_json",
+          "type": "JSON",
+          "nullable": true,
+          "description": "期望结果，未知时NULL"
+        },
+        {
+          "name": "metadata_json",
+          "type": "JSON",
+          "nullable": true,
+          "description": "标签与扩展信息，不存密钥"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "dataset_version_id",
+          "case_key"
+        ]
+      ],
+      "indexes": [],
+      "checks": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "dataset_version_id"
+          ],
+          "references_table": "dataset_versions",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "evaluator_definitions": {
+      "description": "算子实现与输入输出契约版本",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "evaluator_key",
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "description": "算子稳定标识"
+        },
+        {
+          "name": "version",
+          "type": "INT",
+          "nullable": false,
+          "description": "版本号"
+        },
+        {
+          "name": "display_name",
+          "type": "VARCHAR(128)",
+          "nullable": false,
+          "description": "名称"
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "nullable": true,
+          "description": "说明"
+        },
+        {
+          "name": "evaluator_type",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "算子分类"
+        },
+        {
+          "name": "implementation_ref",
+          "type": "VARCHAR(256)",
+          "nullable": false,
+          "description": "注册的实现及代码或镜像版本"
+        },
+        {
+          "name": "input_schema_json",
+          "type": "JSON",
+          "nullable": false,
+          "description": "输入JSON Schema"
+        },
+        {
+          "name": "output_schema_json",
+          "type": "JSON",
+          "nullable": false,
+          "description": "输出JSON Schema"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "版本状态",
+          "default": "DRAFT"
+        },
+        {
+          "name": "published_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "发布时间"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "evaluator_key",
+          "version"
+        ]
+      ],
+      "indexes": [],
+      "checks": [
+        "version >= 1",
+        "evaluator_type IN ('RULE', 'TRACE', 'COST', 'TEST', 'LLM_JUDGE')",
+        "status IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')"
+      ],
+      "foreign_keys": []
+    },
+    "evaluation_plans": {
+      "description": "评测方案身份",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "code",
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "description": "唯一业务标识"
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(128)",
+          "nullable": false,
+          "description": "名称"
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "nullable": true,
+          "description": "说明"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "code"
+        ]
+      ],
+      "indexes": [],
+      "checks": [],
+      "foreign_keys": []
+    },
+    "evaluation_plan_versions": {
+      "description": "方案配置快照",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "plan_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属方案"
+        },
+        {
+          "name": "version",
+          "type": "INT",
+          "nullable": false,
+          "description": "版本号"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "版本状态",
+          "default": "DRAFT"
+        },
+        {
+          "name": "config_json",
+          "type": "JSON",
+          "nullable": false,
+          "description": "任务结果来源、门禁规则、重试与超时预算"
+        },
+        {
+          "name": "content_hash",
+          "type": "CHAR(64)",
+          "nullable": true,
+          "description": "发布时完整方案摘要"
+        },
+        {
+          "name": "published_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "发布时间"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "plan_id",
+          "version"
+        ]
+      ],
+      "indexes": [],
+      "checks": [
+        "version >= 1",
+        "status IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "plan_id"
+          ],
+          "references_table": "evaluation_plans",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "evaluation_plan_items": {
+      "description": "顺序执行的固定算子配置",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "plan_version_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属方案版本"
+        },
+        {
+          "name": "evaluator_definition_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "固定算子版本"
+        },
+        {
+          "name": "execution_order",
+          "type": "INT",
+          "nullable": false,
+          "description": "从1递增且版本内唯一"
+        },
+        {
+          "name": "required",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "description": "影响技术完成，不等同于质量通过",
+          "default": "true"
+        },
+        {
+          "name": "config_json",
+          "type": "JSON",
+          "nullable": false,
+          "description": "算子参数与阈值，空配置用对象"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "plan_version_id",
+          "evaluator_definition_id"
+        ],
+        [
+          "plan_version_id",
+          "execution_order"
+        ]
+      ],
+      "indexes": [],
+      "checks": [
+        "execution_order >= 1"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "plan_version_id"
+          ],
+          "references_table": "evaluation_plan_versions",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "evaluator_definition_id"
+          ],
+          "references_table": "evaluator_definitions",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "experiments": {
+      "description": "固定版本的实验",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "name",
+          "type": "VARCHAR(128)",
+          "nullable": false,
+          "description": "名称"
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "nullable": true,
+          "description": "说明"
+        },
+        {
+          "name": "mode",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "ONLINE或OFFLINE"
+        },
+        {
+          "name": "dataset_version_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "固定已发布样本版本"
+        },
+        {
+          "name": "evaluation_plan_version_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "固定已发布方案版本"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "技术状态",
+          "default": "DRAFT"
+        },
+        {
+          "name": "config_json",
+          "type": "JSON",
+          "nullable": false,
+          "description": "运行预算等不可变提交快照"
+        },
+        {
+          "name": "expected_run_count",
+          "type": "BIGINT",
+          "nullable": false,
+          "description": "开始时冻结的槽位总数",
+          "default": "0"
+        },
+        {
+          "name": "started_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "首次开始"
+        },
+        {
+          "name": "finished_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "终态时间"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [],
+      "indexes": [
+        [
+          "status",
+          "created_at",
+          "id"
+        ]
+      ],
+      "checks": [
+        "expected_run_count >= 0",
+        "mode IN ('ONLINE', 'OFFLINE')",
+        "status IN ('DRAFT', 'QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "dataset_version_id"
+          ],
+          "references_table": "dataset_versions",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "evaluation_plan_version_id"
+          ],
+          "references_table": "evaluation_plan_versions",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "experiment_targets": {
+      "description": "在线/离线比较对象",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "experiment_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属实验"
+        },
+        {
+          "name": "target_key",
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "description": "实验内稳定标识"
+        },
+        {
+          "name": "display_name",
+          "type": "VARCHAR(128)",
+          "nullable": false,
+          "description": "显示名称"
+        },
+        {
+          "name": "agent_version_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "离线可空；在线必须已发布"
+        },
+        {
+          "name": "repeat_count",
+          "type": "INT",
+          "nullable": false,
+          "description": "每个样本的重复观察数",
+          "default": "1"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "experiment_id",
+          "target_key"
+        ],
+        [
+          "experiment_id",
+          "id"
+        ]
+      ],
+      "indexes": [],
+      "checks": [
+        "repeat_count >= 1"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "experiment_id"
+          ],
+          "references_table": "experiments",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "agent_version_id"
+          ],
+          "references_table": "agent_versions",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "evaluation_runs": {
+      "description": "逻辑观察与最终接受输出",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "experiment_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属实验"
+        },
+        {
+          "name": "experiment_target_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属对象"
+        },
+        {
+          "name": "dataset_case_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "固定样本；服务层校验属于实验版本"
+        },
+        {
+          "name": "repeat_index",
+          "type": "INT",
+          "nullable": false,
+          "description": "逻辑重复编号，与Attempt不同",
+          "default": "1"
+        },
+        {
+          "name": "import_batch_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "首次创建此Run的批次"
+        },
+        {
+          "name": "mode",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "须与实验相同"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "技术状态",
+          "default": "PENDING"
+        },
+        {
+          "name": "task_outcome",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "业务任务结果",
+          "default": "UNKNOWN"
+        },
+        {
+          "name": "source_system",
+          "type": "VARCHAR(64)",
+          "nullable": true,
+          "description": "离线必填，在线可空"
+        },
+        {
+          "name": "source_record_id",
+          "type": "VARCHAR(128)",
+          "nullable": true,
+          "description": "外部记录标识，成对出现"
+        },
+        {
+          "name": "source_record_hash",
+          "type": "CHAR(64)",
+          "nullable": true,
+          "description": "原始规范化导入记录摘要"
+        },
+        {
+          "name": "trace_id",
+          "type": "CHAR(32)",
+          "nullable": true,
+          "description": "合法OTel Trace ID；不能填ULID"
+        },
+        {
+          "name": "external_trace_ref",
+          "type": "VARCHAR(256)",
+          "nullable": true,
+          "description": "非OTel来源追踪引用"
+        },
+        {
+          "name": "output_json",
+          "type": "JSON",
+          "nullable": true,
+          "description": "最终接受的规范化输出，小于等于64KiB"
+        },
+        {
+          "name": "output_artifact_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "较大输出引用，不与output_json同时有值"
+        },
+        {
+          "name": "usage_json",
+          "type": "JSON",
+          "nullable": true,
+          "description": "最终观察用量、币种、来源与缺失标记"
+        },
+        {
+          "name": "observation_metadata_json",
+          "type": "JSON",
+          "nullable": false,
+          "description": "outputKnown、traceCoverage、outcomeSource与适配器版本等观测完整性"
+        },
+        {
+          "name": "attempt_count",
+          "type": "INT",
+          "nullable": false,
+          "description": "已创建的执行尝试数",
+          "default": "0"
+        },
+        {
+          "name": "active_attempt_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "当前唯一执行尝试"
+        },
+        {
+          "name": "accepted_attempt_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "最终被接受尝试；离线为空"
+        },
+        {
+          "name": "next_retry_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "再次可领取时间"
+        },
+        {
+          "name": "sealed_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "执行数据封口时间"
+        },
+        {
+          "name": "started_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "开始时间"
+        },
+        {
+          "name": "finished_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "技术终态时间"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "experiment_target_id",
+          "dataset_case_id",
+          "repeat_index"
+        ],
+        [
+          "experiment_id",
+          "experiment_target_id",
+          "source_system",
+          "source_record_id"
+        ]
+      ],
+      "indexes": [
+        [
+          "experiment_id",
+          "status"
+        ],
+        [
+          "status",
+          "next_retry_at",
+          "created_at",
+          "id"
+        ],
+        [
+          "dataset_case_id"
+        ],
+        [
+          "created_at",
+          "id"
+        ],
+        [
+          "trace_id"
+        ]
+      ],
+      "checks": [
+        "repeat_index >= 1",
+        "attempt_count >= 0",
+        "(source_system IS NULL) = (source_record_id IS NULL)",
+        "NOT (output_json IS NOT NULL AND output_artifact_id IS NOT NULL)",
+        "mode IN ('ONLINE', 'OFFLINE')",
+        "task_outcome IN ('UNKNOWN', 'SUCCESS', 'FAILURE', 'NOT_APPLICABLE')",
+        "status IN ('PENDING', 'QUEUED', 'RUNNING', 'EVALUATING', 'COMPLETED', 'FAILED', 'TIMED_OUT', 'CANCELLED')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "experiment_id"
+          ],
+          "references_table": "experiments",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "experiment_id",
+            "experiment_target_id"
+          ],
+          "references_table": "experiment_targets",
+          "references_columns": [
+            "experiment_id",
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "dataset_case_id"
+          ],
+          "references_table": "dataset_cases",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "id",
+            "active_attempt_id"
+          ],
+          "references_table": "run_attempts",
+          "references_columns": [
+            "run_id",
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "id",
+            "accepted_attempt_id"
+          ],
+          "references_table": "run_attempts",
+          "references_columns": [
+            "run_id",
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "output_artifact_id"
+          ],
+          "references_table": "artifacts",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "import_batch_id"
+          ],
+          "references_table": "import_batches",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "run_attempts": {
+      "description": "每次执行尝试；失败重试保留历史",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "run_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "逻辑Run"
+        },
+        {
+          "name": "attempt_no",
+          "type": "INT",
+          "nullable": false,
+          "description": "单调递增"
+        },
+        {
+          "name": "worker_id",
+          "type": "VARCHAR(128)",
+          "nullable": false,
+          "description": "Worker实例标识"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "尝试状态",
+          "default": "RUNNING"
+        },
+        {
+          "name": "lease_token_hash",
+          "type": "CHAR(64)",
+          "nullable": false,
+          "description": "随机Token摘要，不存明文"
+        },
+        {
+          "name": "lease_until",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "数据库UTC租约截止"
+        },
+        {
+          "name": "deadline_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "硬截止，续租不得越过"
+        },
+        {
+          "name": "completion_hash",
+          "type": "CHAR(64)",
+          "nullable": true,
+          "description": "完成回调的规范化摘要，支持重放"
+        },
+        {
+          "name": "output_json",
+          "type": "JSON",
+          "nullable": true,
+          "description": "尝试输出，失败亦可留存"
+        },
+        {
+          "name": "output_artifact_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "大输出附件"
+        },
+        {
+          "name": "usage_json",
+          "type": "JSON",
+          "nullable": true,
+          "description": "本尝试用量，包括重试成本"
+        },
+        {
+          "name": "started_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "领取时间"
+        },
+        {
+          "name": "finished_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "结束时间"
+        },
+        {
+          "name": "error_code",
+          "type": "VARCHAR(64)",
+          "nullable": true,
+          "description": "结构化错误码"
+        },
+        {
+          "name": "error_message",
+          "type": "VARCHAR(1024)",
+          "nullable": true,
+          "description": "已脱敏错误摘要"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "run_id",
+          "attempt_no"
+        ],
+        [
+          "run_id",
+          "id"
+        ]
+      ],
+      "indexes": [
+        [
+          "status",
+          "lease_until"
+        ]
+      ],
+      "checks": [
+        "attempt_no >= 1",
+        "status IN ('RUNNING', 'COMPLETED', 'FAILED', 'TIMED_OUT', 'CANCELLED')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "run_id"
+          ],
+          "references_table": "evaluation_runs",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "output_artifact_id"
+          ],
+          "references_table": "artifacts",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "artifacts": {
+      "description": "对象存储元数据，可先上传后关联Run",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "run_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "导入原文件可为空"
+        },
+        {
+          "name": "artifact_type",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "IMPORT_FILE/OUTPUT/STDOUT/EVIDENCE等注册类型"
+        },
+        {
+          "name": "storage_provider",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "对象存储注册名"
+        },
+        {
+          "name": "object_key",
+          "type": "VARCHAR(512)",
+          "nullable": false,
+          "description": "内部对象路径，不含签名URL"
+        },
+        {
+          "name": "content_type",
+          "type": "VARCHAR(128)",
+          "nullable": false,
+          "description": "MIME类型"
+        },
+        {
+          "name": "size_bytes",
+          "type": "BIGINT",
+          "nullable": false,
+          "description": "服务端校验长度"
+        },
+        {
+          "name": "sha256",
+          "type": "CHAR(64)",
+          "nullable": false,
+          "description": "服务端校验SHA256"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "只在字节检查通过后创建READY记录",
+          "default": "READY"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [],
+      "indexes": [
+        [
+          "run_id"
+        ]
+      ],
+      "checks": [
+        "size_bytes >= 0",
+        "status IN ('READY', 'DELETED')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "run_id"
+          ],
+          "references_table": "evaluation_runs",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "trace_events": {
+      "description": "规范化、追加式轨迹事件",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "event_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "全局幂等ULID；消息重放必须稳定"
+        },
+        {
+          "name": "run_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属Run"
+        },
+        {
+          "name": "run_attempt_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "在线必须指向其执行尝试，离线可空"
+        },
+        {
+          "name": "source_event_id",
+          "type": "VARCHAR(128)",
+          "nullable": true,
+          "description": "上游稳定标识"
+        },
+        {
+          "name": "event_hash",
+          "type": "CHAR(64)",
+          "nullable": false,
+          "description": "事件规范化SHA256，用于同ID异载荷冲突"
+        },
+        {
+          "name": "trace_id",
+          "type": "CHAR(32)",
+          "nullable": true,
+          "description": "合法32位小写十六进制非零"
+        },
+        {
+          "name": "span_id",
+          "type": "CHAR(16)",
+          "nullable": true,
+          "description": "合法16位小写十六进制非零"
+        },
+        {
+          "name": "parent_span_id",
+          "type": "CHAR(16)",
+          "nullable": true,
+          "description": "父span，可缺失"
+        },
+        {
+          "name": "sequence_no",
+          "type": "BIGINT",
+          "nullable": true,
+          "description": "来源顺序，可重复，不作唯一键"
+        },
+        {
+          "name": "event_type",
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "description": "见事件契约注册表"
+        },
+        {
+          "name": "occurred_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC事件发生时间"
+        },
+        {
+          "name": "payload_json",
+          "type": "JSON",
+          "nullable": false,
+          "description": "脱敏载荷，单事件上限64KiB"
+        },
+        {
+          "name": "artifact_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "大对象引用"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "event_id"
+        ]
+      ],
+      "indexes": [
+        [
+          "run_id",
+          "occurred_at",
+          "id"
+        ],
+        [
+          "trace_id"
+        ],
+        [
+          "run_id",
+          "event_type"
+        ],
+        [
+          "run_attempt_id",
+          "sequence_no",
+          "id"
+        ]
+      ],
+      "checks": [
+        "sequence_no IS NULL OR sequence_no >= 0"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "run_id"
+          ],
+          "references_table": "evaluation_runs",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "run_id",
+            "run_attempt_id"
+          ],
+          "references_table": "run_attempts",
+          "references_columns": [
+            "run_id",
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "artifact_id"
+          ],
+          "references_table": "artifacts",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "evaluation_jobs": {
+      "description": "Run×方案项的逻辑评测任务",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "run_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属Run"
+        },
+        {
+          "name": "evaluation_plan_item_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "固定方案项，服务层检查属于实验方案"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "技术状态",
+          "default": "PENDING"
+        },
+        {
+          "name": "attempt_count",
+          "type": "INT",
+          "nullable": false,
+          "description": "已创建尝试数",
+          "default": "0"
+        },
+        {
+          "name": "active_attempt_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "当前尝试"
+        },
+        {
+          "name": "next_retry_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "退避时间"
+        },
+        {
+          "name": "input_hash",
+          "type": "CHAR(64)",
+          "nullable": false,
+          "description": "封口Run及固定算子输入摘要"
+        },
+        {
+          "name": "started_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "首次领取"
+        },
+        {
+          "name": "finished_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "终态时间"
+        },
+        {
+          "name": "error_code",
+          "type": "VARCHAR(64)",
+          "nullable": true,
+          "description": "最终技术失败原因"
+        },
+        {
+          "name": "error_message",
+          "type": "VARCHAR(1024)",
+          "nullable": true,
+          "description": "脱敏错误摘要"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "run_id",
+          "evaluation_plan_item_id"
+        ],
+        [
+          "run_id",
+          "id"
+        ]
+      ],
+      "indexes": [
+        [
+          "status",
+          "next_retry_at",
+          "created_at",
+          "id"
+        ]
+      ],
+      "checks": [
+        "attempt_count >= 0",
+        "status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'SKIPPED')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "run_id"
+          ],
+          "references_table": "evaluation_runs",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "evaluation_plan_item_id"
+          ],
+          "references_table": "evaluation_plan_items",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "id",
+            "active_attempt_id"
+          ],
+          "references_table": "evaluation_job_attempts",
+          "references_columns": [
+            "job_id",
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "evaluation_job_attempts": {
+      "description": "算子重试历史与租约",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "job_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属Job"
+        },
+        {
+          "name": "attempt_no",
+          "type": "INT",
+          "nullable": false,
+          "description": "单调递增"
+        },
+        {
+          "name": "worker_id",
+          "type": "VARCHAR(128)",
+          "nullable": false,
+          "description": "Worker实例"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "尝试状态",
+          "default": "RUNNING"
+        },
+        {
+          "name": "lease_token_hash",
+          "type": "CHAR(64)",
+          "nullable": false,
+          "description": "Token摘要"
+        },
+        {
+          "name": "lease_until",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "租约截止"
+        },
+        {
+          "name": "deadline_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "硬截止"
+        },
+        {
+          "name": "completion_hash",
+          "type": "CHAR(64)",
+          "nullable": true,
+          "description": "回调摘要"
+        },
+        {
+          "name": "result_json",
+          "type": "JSON",
+          "nullable": true,
+          "description": "本次尝试结果，仅最终合法尝试晋升Result"
+        },
+        {
+          "name": "usage_json",
+          "type": "JSON",
+          "nullable": true,
+          "description": "Judge等实际成本"
+        },
+        {
+          "name": "error_code",
+          "type": "VARCHAR(64)",
+          "nullable": true,
+          "description": "技术错误码"
+        },
+        {
+          "name": "error_message",
+          "type": "VARCHAR(1024)",
+          "nullable": true,
+          "description": "脱敏错误摘要"
+        },
+        {
+          "name": "started_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "开始时间"
+        },
+        {
+          "name": "finished_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "结束时间"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "job_id",
+          "attempt_no"
+        ],
+        [
+          "job_id",
+          "id"
+        ]
+      ],
+      "indexes": [
+        [
+          "status",
+          "lease_until"
+        ]
+      ],
+      "checks": [
+        "attempt_no >= 1",
+        "status IN ('RUNNING', 'COMPLETED', 'FAILED', 'TIMED_OUT', 'CANCELLED')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "job_id"
+          ],
+          "references_table": "evaluation_jobs",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "evaluation_results": {
+      "description": "每个Job唯一最终自动结论",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "job_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属Job"
+        },
+        {
+          "name": "job_attempt_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "产生结果的合法算子尝试"
+        },
+        {
+          "name": "verdict",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "质量结论"
+        },
+        {
+          "name": "score",
+          "type": "DECIMAL(6,5)",
+          "nullable": true,
+          "description": "0到1，可空"
+        },
+        {
+          "name": "reason",
+          "type": "TEXT",
+          "nullable": true,
+          "description": "简要解释"
+        },
+        {
+          "name": "evidence_json",
+          "type": "JSON",
+          "nullable": true,
+          "description": "事件或附件引用"
+        },
+        {
+          "name": "result_json",
+          "type": "JSON",
+          "nullable": false,
+          "description": "完整结果，含缺失原因和实现信息"
+        },
+        {
+          "name": "generated_by",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "生成来源"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "job_id"
+        ]
+      ],
+      "indexes": [],
+      "checks": [
+        "score IS NULL OR (score >= 0 AND score <= 1)",
+        "verdict IN ('PASS', 'FAIL', 'INDETERMINATE', 'NOT_APPLICABLE')",
+        "generated_by IN ('RULE', 'TEST', 'LLM', 'MOCK')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "job_id"
+          ],
+          "references_table": "evaluation_jobs",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "job_id",
+            "job_attempt_id"
+          ],
+          "references_table": "evaluation_job_attempts",
+          "references_columns": [
+            "job_id",
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "annotation_tasks": {
+      "description": "人工复核当前状态",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "run_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "复核对象"
+        },
+        {
+          "name": "evaluation_job_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "可针对单算子"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "标注状态",
+          "default": "PENDING"
+        },
+        {
+          "name": "assignee_id",
+          "type": "VARCHAR(128)",
+          "nullable": true,
+          "description": "测试身份或未来用户ID，不建虚假users外键"
+        },
+        {
+          "name": "claimed_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "领取时间"
+        },
+        {
+          "name": "submitted_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "提交时间"
+        },
+        {
+          "name": "reviewed_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "审核时间"
+        },
+        {
+          "name": "version",
+          "type": "BIGINT",
+          "nullable": false,
+          "description": "乐观锁版本",
+          "default": "0"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [],
+      "indexes": [
+        [
+          "status",
+          "created_at",
+          "id"
+        ],
+        [
+          "run_id"
+        ]
+      ],
+      "checks": [
+        "version >= 0",
+        "status IN ('PENDING', 'CLAIMED', 'SUBMITTED', 'REVIEWED', 'RETURNED', 'CANCELLED')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "run_id"
+          ],
+          "references_table": "evaluation_runs",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "run_id",
+            "evaluation_job_id"
+          ],
+          "references_table": "evaluation_jobs",
+          "references_columns": [
+            "run_id",
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "annotation_records": {
+      "description": "追加式人工操作历史",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "annotation_task_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属任务"
+        },
+        {
+          "name": "operator_id",
+          "type": "VARCHAR(128)",
+          "nullable": false,
+          "description": "操作者"
+        },
+        {
+          "name": "action",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "CLAIM/SUBMIT/REVIEW/RETURN/CANCEL"
+        },
+        {
+          "name": "verdict",
+          "type": "VARCHAR(32)",
+          "nullable": true,
+          "description": "提交或审核的质量判断"
+        },
+        {
+          "name": "failure_category",
+          "type": "VARCHAR(64)",
+          "nullable": true,
+          "description": "归因注册分类，允许OTHER"
+        },
+        {
+          "name": "reason",
+          "type": "TEXT",
+          "nullable": true,
+          "description": "解释"
+        },
+        {
+          "name": "evidence_json",
+          "type": "JSON",
+          "nullable": true,
+          "description": "事件、附件及标注证据"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [],
+      "indexes": [
+        [
+          "annotation_task_id",
+          "created_at",
+          "id"
+        ]
+      ],
+      "checks": [
+        "action IN ('CLAIM', 'SUBMIT', 'REVIEW', 'RETURN', 'CANCEL')",
+        "verdict IN ('PASS', 'FAIL', 'INDETERMINATE', 'NOT_APPLICABLE')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "annotation_task_id"
+          ],
+          "references_table": "annotation_tasks",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "import_batches": {
+      "description": "导入文件与进度，恢复时锁批次行",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "import_type",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "DATASET_CASES或OFFLINE_RUNS"
+        },
+        {
+          "name": "dataset_version_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "样本导入为草稿；轨迹导入为已发布"
+        },
+        {
+          "name": "experiment_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "OFFLINE_RUNS必须有OFFLINE草稿实验"
+        },
+        {
+          "name": "file_artifact_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "校验过的原文件"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "批次技术状态",
+          "default": "PENDING"
+        },
+        {
+          "name": "total_count",
+          "type": "BIGINT",
+          "nullable": false,
+          "description": "完成扫描后确定非空物理行数",
+          "default": "0"
+        },
+        {
+          "name": "success_count",
+          "type": "BIGINT",
+          "nullable": false,
+          "description": "含幂等复用行",
+          "default": "0"
+        },
+        {
+          "name": "failed_count",
+          "type": "BIGINT",
+          "nullable": false,
+          "description": "错误行数",
+          "default": "0"
+        },
+        {
+          "name": "duplicate_count",
+          "type": "BIGINT",
+          "nullable": false,
+          "description": "成功行中的幂等复用子集",
+          "default": "0"
+        },
+        {
+          "name": "last_line_no",
+          "type": "BIGINT",
+          "nullable": false,
+          "description": "最后提交的连续物理行号",
+          "default": "0"
+        },
+        {
+          "name": "started_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "开始时间"
+        },
+        {
+          "name": "finished_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "结束时间"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [],
+      "indexes": [
+        [
+          "experiment_id",
+          "status"
+        ],
+        [
+          "status",
+          "created_at",
+          "id"
+        ]
+      ],
+      "checks": [
+        "total_count >= 0",
+        "success_count >= 0",
+        "failed_count >= 0",
+        "duplicate_count >= 0",
+        "duplicate_count <= success_count",
+        "last_line_no >= 0",
+        "import_type IN ('DATASET_CASES', 'OFFLINE_RUNS')",
+        "status IN ('PENDING', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "dataset_version_id"
+          ],
+          "references_table": "dataset_versions",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "experiment_id"
+          ],
+          "references_table": "experiments",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "file_artifact_id"
+          ],
+          "references_table": "artifacts",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "import_records": {
+      "description": "每行导入回执，确保重放不重复计数",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "batch_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "批次"
+        },
+        {
+          "name": "line_no",
+          "type": "BIGINT",
+          "nullable": false,
+          "description": "从1开始的物理行号；空行不建回执"
+        },
+        {
+          "name": "record_hash",
+          "type": "CHAR(64)",
+          "nullable": false,
+          "description": "原始行字节SHA256，不持有原文"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "IMPORTED/REUSED/REJECTED"
+        },
+        {
+          "name": "dataset_case_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "成功时对应样本"
+        },
+        {
+          "name": "run_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "历史运行导入时对应Run"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "batch_id",
+          "line_no"
+        ]
+      ],
+      "indexes": [],
+      "checks": [
+        "line_no >= 1",
+        "status IN ('IMPORTED', 'REUSED', 'REJECTED')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "batch_id"
+          ],
+          "references_table": "import_batches",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "dataset_case_id"
+          ],
+          "references_table": "dataset_cases",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "run_id"
+          ],
+          "references_table": "evaluation_runs",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "import_errors": {
+      "description": "脱敏错误定位，不存原始敏感行",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "batch_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属批次"
+        },
+        {
+          "name": "line_no",
+          "type": "BIGINT",
+          "nullable": false,
+          "description": "物理行号"
+        },
+        {
+          "name": "error_code",
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "description": "结构化原因"
+        },
+        {
+          "name": "error_message",
+          "type": "VARCHAR(1024)",
+          "nullable": false,
+          "description": "脱敏字段级摘要"
+        },
+        {
+          "name": "record_hash",
+          "type": "CHAR(64)",
+          "nullable": false,
+          "description": "原始行SHA256"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "batch_id",
+          "line_no"
+        ]
+      ],
+      "indexes": [],
+      "checks": [
+        "line_no >= 1"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "batch_id"
+          ],
+          "references_table": "import_batches",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
+    "outbox_events": {
+      "description": "事务消息，TASK-002建表，TASK-011实现发布",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "aggregate_type",
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "description": "聚合类型"
+        },
+        {
+          "name": "aggregate_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "多态聚合ID，服务层校验，无虚假多态外键"
+        },
+        {
+          "name": "event_type",
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "description": "事件类型"
+        },
+        {
+          "name": "event_version",
+          "type": "INT",
+          "nullable": false,
+          "description": "信封版本",
+          "default": "1"
+        },
+        {
+          "name": "payload_json",
+          "type": "JSON",
+          "nullable": false,
+          "description": "完整稳定信封，不含正文与密钥"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "发布状态",
+          "default": "PENDING"
+        },
+        {
+          "name": "retry_count",
+          "type": "INT",
+          "nullable": false,
+          "description": "发布重试次数",
+          "default": "0"
+        },
+        {
+          "name": "next_retry_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "下次发布时间"
+        },
+        {
+          "name": "publisher_id",
+          "type": "VARCHAR(128)",
+          "nullable": true,
+          "description": "当前发布器"
+        },
+        {
+          "name": "lease_until",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "发布领取租约"
+        },
+        {
+          "name": "claim_token_hash",
+          "type": "CHAR(64)",
+          "nullable": true,
+          "description": "发布领取隔离令牌摘要"
+        },
+        {
+          "name": "published_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "确认发布时间"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [],
+      "indexes": [
+        [
+          "status",
+          "next_retry_at",
+          "created_at",
+          "id"
+        ]
+      ],
+      "checks": [
+        "event_version >= 1",
+        "retry_count >= 0",
+        "status IN ('PENDING', 'PUBLISHED', 'FAILED')"
+      ],
+      "foreign_keys": []
+    },
+    "inbox_events": {
+      "description": "通知去重记录，TASK-011启用",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "consumer_name",
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "description": "消费者逻辑名称"
+        },
+        {
+          "name": "event_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "消息信封eventId，区别于TraceEvent"
+        },
+        {
+          "name": "payload_hash",
+          "type": "CHAR(64)",
+          "nullable": false,
+          "description": "重复信封内容一致性检查"
+        },
+        {
+          "name": "processed_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "短事务处理提交时间"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "consumer_name",
+          "event_id"
+        ]
+      ],
+      "indexes": [],
+      "checks": [],
+      "foreign_keys": []
+    },
+    "api_idempotency_keys": {
+      "description": "创建与状态动作的请求幂等",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "scope",
+          "type": "VARCHAR(160)",
+          "nullable": false,
+          "description": "身份+操作+资源范围的规范化摘要标识"
+        },
+        {
+          "name": "idempotency_key",
+          "type": "VARCHAR(128)",
+          "nullable": false,
+          "description": "调用者提供的请求标识"
+        },
+        {
+          "name": "request_hash",
+          "type": "CHAR(64)",
+          "nullable": false,
+          "description": "规范化正文摘要"
+        },
+        {
+          "name": "resource_type",
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "description": "已创建或已操作资源类型"
+        },
+        {
+          "name": "resource_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "结果资源ID，多态无直接外键"
+        },
+        {
+          "name": "http_status",
+          "type": "INT",
+          "nullable": false,
+          "description": "原始成功响应状态"
+        },
+        {
+          "name": "response_json",
+          "type": "JSON",
+          "nullable": false,
+          "description": "原始成功响应data，返回时使用当前requestId"
+        },
+        {
+          "name": "expires_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "至少7天，业务唯一键永久生效"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "scope",
+          "idempotency_key"
+        ]
+      ],
+      "indexes": [
+        [
+          "expires_at"
+        ]
+      ],
+      "checks": [],
+      "foreign_keys": []
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "eventId": "01K7R1XQ000000000000000004",
+  "eventType": "run.ready",
+  "occurredAt": "2026-10-17T04:00:00.000Z",
+  "aggregateType": "RUN",
+  "aggregateId": "01K7R1XQ000000000000000002",
+  "correlationId": "01K7R1XQ000000000000000005",
+  "payload": {
+    "runId": "01K7R1XQ000000000000000002"
+  }
+}

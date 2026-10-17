@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repopilot.local/schemas/offline-run.schema.json",
+  "title": "offline-run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "targetKey",
+    "caseKey",
+    "repeatIndex",
+    "sourceSystem",
+    "sourceRecordId",
+    "taskOutcome",
+    "events"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "targetKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "caseKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "repeatIndex": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "sourceSystem": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "sourceRecordId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "taskOutcome": {
+      "enum": [
+        "UNKNOWN",
+        "SUCCESS",
+        "FAILURE",
+        "NOT_APPLICABLE"
+      ]
+    },
+    "traceId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^(?!0{32}$)[0-9a-f]{32}$"
+    },
+    "externalTraceRef": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256
+    },
+    "output": {},
+    "usage": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "observationMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "outputKnown": {
+          "type": "boolean"
+        },
+        "traceCoverage": {
+          "enum": [
+            "NONE",
+            "PARTIAL",
+            "COMPLETE"
+          ]
+        },
+        "outcomeSource": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "adapterVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finishedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "events": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "eventType",
+          "occurredAt",
+          "payload"
+        ],
+        "properties": {
+          "sourceEventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "traceId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^(?!0{32}$)[0-9a-f]{32}$"
+          },
+          "spanId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^(?!0{16}$)[0-9a-f]{16}$"
+          },
+          "parentSpanId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^(?!0{16}$)[0-9a-f]{16}$"
+          },
+          "sequenceNo": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "eventType": {
+            "enum": [
+              "RUN_STARTED",
+              "RUN_COMPLETED",
+              "MODEL_REQUEST",
+              "MODEL_RESPONSE",
+              "TOOL_STARTED",
+              "TOOL_COMPLETED",
+              "OUTPUT_PRODUCED",
+              "ERROR"
+            ]
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "payload": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}

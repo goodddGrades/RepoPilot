@@ -1,0 +1,9 @@
+{
+  "status": "PASS",
+  "checks": 817,
+  "tables": 26,
+  "json_schemas": 4,
+  "positive_samples": 4,
+  "negative_samples": 18,
+  "scope": "设计文件静态检查；不代表MySQL迁移或应用验收"
+}

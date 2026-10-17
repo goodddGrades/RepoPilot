@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repopilot.local/schemas/dataset-case.schema.json",
+  "title": "dataset-case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "caseKey",
+    "taskType",
+    "input"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "caseKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "taskType": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "input": {
+      "type": "object"
+    },
+    "expected": {},
+    "metadata": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  }
+}

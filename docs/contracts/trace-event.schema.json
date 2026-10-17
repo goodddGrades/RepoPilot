@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repopilot.local/schemas/trace-event.schema.json",
+  "title": "trace-event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "runId",
+    "eventType",
+    "occurredAt",
+    "payload"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "eventId": {
+      "type": "string",
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "runAttemptId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sourceEventId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 128
+    },
+    "traceId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^(?!0{32}$)[0-9a-f]{32}$"
+    },
+    "spanId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^(?!0{16}$)[0-9a-f]{16}$"
+    },
+    "parentSpanId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^(?!0{16}$)[0-9a-f]{16}$"
+    },
+    "sequenceNo": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "eventType": {
+      "enum": [
+        "RUN_STARTED",
+        "RUN_COMPLETED",
+        "MODEL_REQUEST",
+        "MODEL_RESPONSE",
+        "TOOL_STARTED",
+        "TOOL_COMPLETED",
+        "OUTPUT_PRODUCED",
+        "ERROR"
+      ]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "artifactId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}
