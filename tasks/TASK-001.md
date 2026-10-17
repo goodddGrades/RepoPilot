@@ -1,6 +1,7 @@
 # TASK-001 · Monorepo、Docker Compose 与三端基础工程
 
-- 状态：**已完成**（2026-10-17）
+- 状态：**代码层已完成并通过最终验收；基础设施实跑待有 Docker 的环境补做**（2026-10-17，
+  验收报告见 [`docs/reviews/task-001-final-acceptance.md`](../docs/reviews/task-001-final-acceptance.md)）
 - 上游依据：设计基线 `docs/`（`00-product-scope.md` 交付阶段 + `architecture/01-system-overview.md` 工程组织）；
   早期草案 `project_design.md` 第 12 章仅作追溯
 - 范围：只搭建基础工程，**不实现任何业务功能**
@@ -88,31 +89,34 @@
 
 | 验证项 | 命令 | 结果 |
 | --- | --- | --- |
-| Java 单元测试 | `./mvnw test` | 19 run / 0 failures / 0 errors |
+| Java 单元测试 | `./mvnw test` | 19 run / 0 failures / 0 errors（全部单元测试） |
+| Java 集成测试 | `./mvnw test -Dtest=RepoPilotServerApplicationIT`（无 `MYSQL_PASSWORD`） | 4 run / **Skipped: 4**（未 Mock 顶替） |
 | Python 测试 | `pytest` | 14 passed |
-| 前端类型检查 + 构建 | `npm run build` | 通过（vue-tsc 无错误，1694 modules） |
-| Compose 配置校验 | `docker compose --env-file .env -f deploy/docker-compose.yml config` | 通过（变量插值、健康检查、卷均正确） |
-| 后端启动 + HTTP 实测 | `java -jar target/repopilot-server.jar --server.port=18080 --spring.flyway.enabled=false` | 启动成功（6.1s）；`/api/health` 200、`X-Request-Id` 已生成、统一结构与 UTC ISO 时间 |
-| 健康检查「不造假」实测 | `curl /api/health`（无数据库/队列） | `status=DOWN`，mysql/rabbitmq 均 DOWN 且带真实错误摘要（已压成单行并截断 200 字符），flyway/redis 为 UNKNOWN |
+| 前端类型检查 + 构建 | `npm run build` | 通过（vue-tsc 无错误；主 chunk 1098.89 kB / gzip 365.02 kB） |
+| Compose 配置校验 | `docker compose --env-file .env -f deploy/docker-compose.yml config` | 通过（变量插值、健康检查、卷均正确；MinIO 探活可覆盖） |
+| 后端启动 + HTTP 实测 | `java -jar target/repopilot-server.jar --server.port=18080 --spring.flyway.enabled=false` | 启动成功；`/api/health` 200、`message=success`、`X-Request-Id` 已生成、UTC ISO 时间 |
+| 健康检查「不造假」实测 | `curl /api/health`（无数据库/队列） | `status=DOWN`，mysql/rabbitmq 均 DOWN 且带真实错误摘要（单行、截断 200 字符），flyway/redis 为 UNKNOWN |
 | 统一错误结构实测 | `curl /api/not-exist` | HTTP 404，`{"code":"NOT_FOUND","message":"请求的资源不存在","requestId":"…","timestamp":"…"}` |
-| Actuator 实测 | `curl /actuator/health` | HTTP 200，`status=DOWN`，liveness/readiness 分组正常，db/rabbit 明细可见 |
-| 前端 dev server | `npm run dev` | 首页 HTTP 200，`/api` 代理规则已配置 |
-| 基础设施实跑 + 集成测试 | 见 §6 | **未执行**（当前环境无法启动容器） |
+| 探针语义实测 | `curl /actuator/health/liveness`、`/readiness` | liveness **200 UP**（依赖故障不影响）；readiness **503 DOWN**（db/rabbit 明细） |
+| requestId 贯通日志 | 用响应体 requestId 检索 `logs/repopilot-server.log` | 命中同一 ID 的 WARN 行，MDC 生效 |
+| 前端 dev server + 代理联调 | `npm run dev` 后 `curl :5199/api/health`、`/api/not-exist` | 首页 200；**经代理拿到真实后端响应**；404 为统一结构 |
+| 基础设施实跑 | 见 §6 | **未执行**（Docker 守护进程被环境策略阻断） |
 
 ## 5. 已知问题
 
-1. **本机未能实跑容器**：当前开发环境禁止启动 Docker 守护进程（`sc.exe` / `wsl.exe` 被安全策略拦截，
-   Docker Desktop 无法引导），因此「compose 真实启动」「Java 连接 MySQL/RabbitMQ」
-   「Flyway 实际执行」三项只能由使用者在具备 Docker 的机器上按 README 步骤验证。
-   代码与配置均已就绪，`docker compose config` 已通过；集成测试 `RepoPilotServerApplicationIT`
-   会在基础设施就绪后自动执行这三项校验。
-2. **前端 → 后端代理未端到端验证**：当前沙箱拦截了 Node 进程的出站 HTTP
-   （TCP 可建立但不返回响应），Vite dev proxy 无法完成一次真实转发。
-   已分别验证后端接口（curl）与前端启动/构建，代理配置为标准写法，本地环境可直接工作。
-3. MinIO 健康检查使用镜像内置 `mc ready local`；若所用 MinIO 镜像不含 `mc`，
-   需改为 HTTP 探活 `http://localhost:9000/minio/health/live`（见 `deploy/README.md`）。
-4. Redis 仅在 Compose 中提供实例，Java 侧健康检查显式返回 `UNKNOWN`（预留，未接入）。
-5. 启动日志中的 `No MyBatis mapper was found` 属预期：本阶段尚无任何 Mapper。
+1. **本机未能实跑容器（唯一未完成项）**：`wsl.exe` 被系统安全策略列入程序黑名单（非权限问题，
+   明确禁止绕过），Docker Desktop 无法引导。因此「compose 真实启动」「Java 连接 MySQL/RabbitMQ」
+   「Flyway 实际执行」「MinIO/RabbitMQ 健康检查」只能由使用者在具备 Docker 的机器上按 README 验证。
+   `docker compose config` 已通过，集成测试 `RepoPilotServerApplicationIT` 就绪后可校验其中三项。
+2. **探针缺陷已修复**：修复前 readiness 在 MySQL/RabbitMQ 全挂时仍返回 `UP`（默认分组不含依赖），
+   已显式声明 `liveness=livenessState,ping` / `readiness=readinessState,db,rabbit`。
+3. **前端 → 后端代理已端到端验证通过**（2026-10-17 复测），此前"沙箱拦截 Node 出站 HTTP"的限制解除。
+4. MinIO 健康检查默认 `mc ready local`，可用 `MINIO_HEALTHCHECK` 覆盖为 HTTP 探活；
+   镜像是否含 `mc` 必须 `docker compose exec minio mc --version` 实测（见 `deploy/README.md`）。
+5. Redis 仅在 Compose 中提供实例，Java 侧健康检查显式返回 `UNKNOWN`（预留，未接入）。
+6. 启动日志中的 `No MyBatis mapper was found` 属预期：本阶段尚无任何 Mapper。
+7. `*IT` 未被 Surefire 默认选中，常规 `./mvnw test` 不含集成测试；建议 TASK-002 引入 Failsafe。
+
 
 ## 6. 待你执行的验收步骤
 

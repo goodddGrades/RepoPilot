@@ -86,6 +86,9 @@ broken link: ...\repopilot-web\node_modules\asynckit\README.md test/test-paralle
 - **测试库隔离**：设计要求"测试用独立库和测试凭证"，当前集成测试直连 `repopilot` 主库（端口 13306）。TASK-002 应新增 `repopilot_test` 库或改用 Testcontainers，禁止用 H2 替代。
 - **时间精度**：设计要求 API 时间恒为 `Z` 后缀、毫秒精度。当前 `Instant` 默认序列化精度不固定，TASK-002 需显式配置 Jackson。
 
+> **2026-10-17 裁决**：第 1 项（`errors`）、第 6 项（保留 `timestamp`）按现有实现冻结，由契约文档侧改为一致；
+> 第 2/3/4/5/8/9/10/11/12 项归 TASK-002 执行；第 7 项（`message`）已改为 `success`。
+
 ## 6. 架构定位差异（2 项，按用户指令保留）
 
 设计包对中间件的定位比本项目 TASK-001 更保守，两者不一致处**以用户下达的 TASK-001 验收标准为准**（用户明确要求 Compose 启 RabbitMQ/Redis、Java 能连 RabbitMQ），但必须标注清楚，避免被读成"业务已使用 MQ"。
@@ -105,9 +108,22 @@ broken link: ...\repopilot-web\node_modules\asynckit\README.md test/test-paralle
 - 真实 MySQL 集成测试、禁止 H2 冒充 → 现状 IT 直连真实 MySQL，符合方向。
 - 密钥只通过环境变量引用、不提交明文 → 现状符合（`.env.example` 只有占位符）。
 
-## 8. 遗留待决（需项目负责人拍板）
+## 8. 待决项（2026-10-17 项目负责人已裁决）
 
-1. §5 第 6 项：响应是否保留 `timestamp`（影响前端与既有测试断言）。
-2. §5 第 12 项：`report` 模块是并入 `experiment` 还是保留独立。
-3. §5 第 5 项：`BAD_REQUEST` / `METHOD_NOT_ALLOWED` / `UNSUPPORTED_MEDIA_TYPE` 是否补进 `openapi-common.yaml`（设计包未列这三个码，但 405/415 实际会发生）。
-4. 是否删除 `RepoPilot-design-v1.0/` 交付包原件（当前保留用于比对；内容已全部落入工作目录）。
+评审结论见 [`task-001-final-acceptance.md`](./task-001-final-acceptance.md)。
+
+| 原待决项 | 决定 | 状态 |
+| --- | --- | --- |
+| §5-6 响应是否保留 `timestamp` | **保留**；信封维持 TASK-001 格式 `code/message/data/errors/requestId/timestamp` | 已冻结，待 TASK-002 把契约文档改成一致 |
+| §5-1 `errors` 还是 `details` | **保留 `errors`**（不改成 `details`） | 同上 |
+| §5-12 `report` 模块是否独立 | 暂不动，TASK-002 按设计 8 模块调整时一并决定 | 待 TASK-002 |
+| §5-5 405/415 错误码是否补文档 | 属契约补全，随 TASK-002 一起改文档 | 待 TASK-002 |
+| 是否删除交付包原件 | **保留**，仅本地留档，已 gitignore | 已处理 |
+
+补充决定（评审同时确认）：
+
+1. 成功响应 `message` 统一为 `"success"`，已在 TASK-001 实现中修正。
+2. TASK-002 **不得重复开发** `ApiResponse`/`ErrorCode`/`GlobalExceptionHandler`/`RequestIdFilter`，
+   改为"检查 + 必要扩展"。
+3. Flyway TASK-002 从 **V2** 起；V1 不修改、不重命名，且须先在真实 MySQL 跑通再出 V2。
+

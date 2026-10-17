@@ -197,37 +197,41 @@ docker compose --env-file .env -f deploy/docker-compose.yml down -v
 
 | 范围 | 命令 | 实测结果 |
 | --- | --- | --- |
-| 后端单元测试 | `cd repopilot-server && ./mvnw test` | **Tests run: 19, Failures: 0, Errors: 0, Skipped: 0** |
-| 后端集成测试（需基础设施） | `set -a && source ../.env && set +a && ./mvnw test -Dtest=RepoPilotServerApplicationIT` | 见 §6 说明 |
+| 后端单元测试 | `cd repopilot-server && ./mvnw test` | **Tests run: 19, Failures: 0, Errors: 0, Skipped: 0**（全部为单元测试） |
+| 后端集成测试（需基础设施） | `set -a && source ../.env && set +a && ./mvnw test -Dtest=RepoPilotServerApplicationIT` | 环境无数据库时 **Skipped: 4**（未 Mock 顶替）；需基础设施就绪后复跑 |
 | Worker | `cd repopilot-worker && pytest` | **14 passed** |
-| 前端类型检查 + 构建 | `cd repopilot-web && npm run build` | **通过**（vue-tsc 无错误，构建 1694 modules） |
-| Compose 语法与变量插值 | `docker compose --env-file .env -f deploy/docker-compose.yml config` | **通过** |
-| 后端启动 + 接口实测（无数据库降级运行） | `java -jar target/repopilot-server.jar --server.port=18080 --spring.flyway.enabled=false` 后 `curl /api/health` | 启动成功（6.1s）；`/api/health` 返回 `status=DOWN`，`mysql`/`rabbitmq` 均为 `DOWN` 并带真实错误摘要，**没有伪造 UP**；响应头带 `X-Request-Id`，响应体为统一结构 |
+| 前端类型检查 + 构建 | `cd repopilot-web && npm run build` | **通过**（vue-tsc 无错误；主 chunk 1098.89 kB / gzip 365.02 kB） |
+| Compose 语法与变量插值 | `docker compose --env-file .env -f deploy/docker-compose.yml config` | **通过**（含 MinIO 探活变量覆盖） |
+| 后端启动 + 接口实测（无数据库降级运行） | `java -jar target/repopilot-server.jar --server.port=18080 --spring.flyway.enabled=false` 后 `curl /api/health` | 启动成功；`/api/health` 返回 `status=DOWN`，`mysql`/`rabbitmq` 均为 `DOWN` 并带真实错误摘要，**没有伪造 UP**；响应头带 `X-Request-Id`，响应体为统一结构 |
+| 探针语义 | `/actuator/health/liveness`、`/actuator/health/readiness` | liveness **200 UP**（不受依赖影响）；readiness **503 DOWN**（db/rabbit 明细） |
+| 前端 → 后端联调 | `npm run dev` 后 `curl http://127.0.0.1:5199/api/health` | **通过**：经 Vite 代理拿到真实响应；`/api/not-exist` 返回统一 404 结构 |
 
 后端接口实测响应（降级运行时，用于验证"不造假"行为）：
 
 ```json
 {
   "code": "OK",
-  "message": "OK",
+  "message": "success",
   "data": {
     "status": "DOWN",
     "components": [
-      { "name": "mysql", "status": "DOWN", "required": true, "detail": "Communications link failure …", "latencyMs": 1228 },
-      { "name": "rabbitmq", "status": "DOWN", "required": true, "detail": "java.net.ConnectException: Connection refused: getsockopt", "latencyMs": 7 },
+      { "name": "mysql", "status": "DOWN", "required": true, "detail": "Communications link failure …", "latencyMs": 1010 },
+      { "name": "rabbitmq", "status": "DOWN", "required": true, "detail": "java.net.ConnectException: Connection refused: getsockopt", "latencyMs": 2 },
       { "name": "flyway", "status": "UNKNOWN", "required": true, "detail": "未配置 Flyway", "latencyMs": 0 },
       { "name": "redis", "status": "UNKNOWN", "required": false, "detail": "V1 预留：容器已编排，但服务端尚未接入 Redis 客户端", "latencyMs": 0 }
     ]
   },
-  "requestId": "4ca888e6-…",
-  "timestamp": "2026-10-17T05:23:20.772Z"
+  "requestId": "acc8cc0a-0620-4604-bbeb-890390f463ec",
+  "timestamp": "2026-10-17T06:07:11.776Z"
 }
 ```
 
 后端测试覆盖：统一响应结构、请求追踪 ID 的生成/透传/清理、全局异常映射（业务异常/参数校验/
 未处理异常/404/非法请求体）、健康状态聚合规则、健康接口响应结构。
 集成测试 `RepoPilotServerApplicationIT` 校验：Spring 上下文、`flyway_schema_history` 中 version=1、
-`/api/health` 三个依赖全部 UP、`/actuator/health` 可访问；未设置 `MYSQL_PASSWORD` 时自动 skip。
+`/api/health` 三个依赖全部 UP、`/actuator/health` 可访问；**未设置 `MYSQL_PASSWORD` 时 4 项全部 Skipped**。
+注意：该测试类名以 `IT` 结尾，Surefire 默认不选中，常规 `./mvnw test` 不会执行它（需显式 `-Dtest=`）。
+
 
 ---
 
@@ -247,22 +251,28 @@ docker compose --env-file .env -f deploy/docker-compose.yml down -v
 
 ## 6. 已知问题
 
-1. **基础设施未在本机实跑**：本次交付环境中 Docker 守护进程无法启动（`sc.exe` / `wsl.exe`
-   被系统安全策略拦截，Docker Desktop 无法引导）。因此「compose 真实启动」「Java 连接 MySQL/RabbitMQ」
-   「Flyway 实际执行迁移」三项需按 §3.3~§3.4 在自己的机器上执行，
-   并用 §4 的集成测试命令验收。Compose 配置已通过 `docker compose config` 校验，
-   后端 HTTP 层已在无数据库的降级模式下实测（见 §4 最后一行），健康检查能正确报告 DOWN 而不是伪造 UP。
-2. **前端 → 后端代理未端到端验证**：当前沙箱把 Node 进程的出站 HTTP 请求做了拦截
-   （连接可建立但不返回响应），因此 Vite dev proxy 无法在此环境完成一次真实转发。
-   已分别验证：后端 `/api/health` 正常返回（curl）、前端 `npm run dev` 首页 200、
-   前端生产构建通过。代理配置为标准写法，在本地环境按 §3.6 启动即可正常工作。
-3. MinIO 健康检查使用镜像内置的 `mc ready local`；若使用不含 `mc` 的镜像，需改为 HTTP 探活，
-   做法见 [`deploy/README.md`](./deploy/README.md)。
-4. Redis 仅编排实例，Java 侧未接入客户端，`/api/health` 中该组件固定为 `UNKNOWN`（预期行为）。
-5. 后端启动日志会出现 `No MyBatis mapper was found` 警告：本阶段尚未定义任何 Mapper，
+1. **基础设施未在本机实跑（唯一未完成项）**：本机 Docker 守护进程无法启动（`wsl.exe` 被系统安全策略
+   列入程序黑名单，非权限问题、明确禁止绕过）。因此「compose 真实启动」「Java 连接 MySQL/RabbitMQ」
+   「Flyway 实际执行迁移」「MinIO/RabbitMQ 健康检查」需按 §3.1 与 §4 在具备 Docker 的机器上验收。
+   Compose 配置已通过 `docker compose config` 校验，后端 HTTP 层已在无数据库的降级模式下实测，
+   健康检查如实报告 DOWN 而非伪造 UP。详见
+   [`docs/reviews/task-001-final-acceptance.md`](./docs/reviews/task-001-final-acceptance.md)。
+2. **前端 → 后端代理已端到端验证通过**（2026-10-17 复测）：经 Vite 代理
+   `GET /api/health` 返回真实响应、`GET /api/not-exist` 返回统一 404 结构。
+3. **探针语义已修正**：`/actuator/health/liveness` 只反映进程自身（依赖故障不触发重启），
+   `/actuator/health/readiness` 包含 `db`/`rabbit`（依赖不可用时返回 503）。
+   修复前 readiness 在依赖全挂时仍报 `UP`，属缺陷。
+4. MinIO 健康检查默认 `mc ready local`，可用 `MINIO_HEALTHCHECK` 覆盖为 HTTP 探活；
+   镜像是否含 `mc` 需 `docker compose exec minio mc --version` 实测，做法见
+   [`deploy/README.md`](./deploy/README.md)。
+5. Redis 仅编排实例，Java 侧未接入客户端，`/api/health` 中该组件固定为 `UNKNOWN`（预期行为）。
+6. 后端启动日志会出现 `No MyBatis mapper was found` 警告：本阶段尚未定义任何 Mapper，
    属预期；TASK-002 引入实体与 Mapper 后消失。
-6. 前端 Element Plus 采用全量引入，构建产物较大（约 1.1 MB / gzip 365 KB）；
+7. 前端 Element Plus 采用全量引入，构建产物较大（约 1.1 MB / gzip 365 KB）；
    后续页面增多时再按需引入或做 manualChunks 拆分。
+8. `RepoPilotServerApplicationIT`（4 项）需显式指定 `-Dtest=` 才会被 Maven 选中，
+   且缺 `MYSQL_PASSWORD` 时记为 Skipped；常规 `./mvnw test` 的 19 项**全部是单元测试**。
+
 
 ---
 
