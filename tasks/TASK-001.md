@@ -78,8 +78,13 @@
 | --- | --- | --- |
 | Java 单元测试 | `./mvnw test` | 19 run / 0 failures / 0 errors |
 | Python 测试 | `pytest` | 14 passed |
-| 前端类型检查 + 构建 | `npm run build` | 通过（1694 modules） |
-| Compose 配置校验 | `docker compose --env-file .env -f deploy/docker-compose.yml config` | 通过 |
+| 前端类型检查 + 构建 | `npm run build` | 通过（vue-tsc 无错误，1694 modules） |
+| Compose 配置校验 | `docker compose --env-file .env -f deploy/docker-compose.yml config` | 通过（变量插值、健康检查、卷均正确） |
+| 后端启动 + HTTP 实测 | `java -jar target/repopilot-server.jar --server.port=18080 --spring.flyway.enabled=false` | 启动成功（6.1s）；`/api/health` 200、`X-Request-Id` 已生成、统一结构与 UTC ISO 时间 |
+| 健康检查「不造假」实测 | `curl /api/health`（无数据库/队列） | `status=DOWN`，mysql/rabbitmq 均 DOWN 且带真实错误摘要（已压成单行并截断 200 字符），flyway/redis 为 UNKNOWN |
+| 统一错误结构实测 | `curl /api/not-exist` | HTTP 404，`{"code":"NOT_FOUND","message":"请求的资源不存在","requestId":"…","timestamp":"…"}` |
+| Actuator 实测 | `curl /actuator/health` | HTTP 200，`status=DOWN`，liveness/readiness 分组正常，db/rabbit 明细可见 |
+| 前端 dev server | `npm run dev` | 首页 HTTP 200，`/api` 代理规则已配置 |
 | 基础设施实跑 + 集成测试 | 见 §6 | **未执行**（当前环境无法启动容器） |
 
 ## 5. 已知问题
@@ -89,9 +94,13 @@
    「Flyway 实际执行」三项只能由使用者在具备 Docker 的机器上按 README 步骤验证。
    代码与配置均已就绪，`docker compose config` 已通过；集成测试 `RepoPilotServerApplicationIT`
    会在基础设施就绪后自动执行这三项校验。
-2. MinIO 健康检查使用镜像内置 `mc ready local`；若所用 MinIO 镜像不含 `mc`，
+2. **前端 → 后端代理未端到端验证**：当前沙箱拦截了 Node 进程的出站 HTTP
+   （TCP 可建立但不返回响应），Vite dev proxy 无法完成一次真实转发。
+   已分别验证后端接口（curl）与前端启动/构建，代理配置为标准写法，本地环境可直接工作。
+3. MinIO 健康检查使用镜像内置 `mc ready local`；若所用 MinIO 镜像不含 `mc`，
    需改为 HTTP 探活 `http://localhost:9000/minio/health/live`（见 `deploy/README.md`）。
-3. Redis 仅在 Compose 中提供实例，Java 侧健康检查显式返回 `UNKNOWN`（预留，未接入）。
+4. Redis 仅在 Compose 中提供实例，Java 侧健康检查显式返回 `UNKNOWN`（预留，未接入）。
+5. 启动日志中的 `No MyBatis mapper was found` 属预期：本阶段尚无任何 Mapper。
 
 ## 6. 待你执行的验收步骤
 
