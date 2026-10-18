@@ -1,0 +1,6 @@
+# repopilot-worker 运行时依赖（精确版本，与 pyproject.toml 保持一致）
+# 安装：pip install -r requirements.txt
+fastapi==0.143.3
+uvicorn[standard]==0.54.0
+pydantic==2.14.1
+pydantic-settings==2.16.0

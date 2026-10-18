@@ -1,0 +1,69 @@
+openapi: 3.1.0
+info:
+  title: RepoPilot common API components
+  version: 1.0.0
+  description: 公共组件；paths由各TASK在真实工程实现后补齐。
+paths: {}
+components:
+  parameters:
+    RequestId:
+      in: header
+      name: X-Request-Id
+      required: false
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_-]{1,64}$'
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9._:-]{1,128}$'
+  schemas:
+    Ulid:
+      type: string
+      pattern: '^[0-7][0-9A-HJKMNP-TV-Z]{25}$'
+    Success:
+      type: object
+      required: [code, message, data, errors, requestId, timestamp]
+      properties:
+        code: {type: string, const: OK}
+        message: {type: string}
+        data: {}
+        errors:
+          type: array
+          maxItems: 0
+          description: 成功时固定为空数组，保持与错误响应同构。
+        requestId: {type: string}
+        timestamp: {type: string, format: date-time}
+    Error:
+      type: object
+      required: [code, message, data, errors, requestId, timestamp]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        data: {type: 'null'}
+        requestId: {type: string}
+        timestamp: {type: string, format: date-time}
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: {type: string}
+              message: {type: string}
+    Page:
+      type: object
+      required: [items, page, pageSize, total]
+      properties:
+        items: {type: array, items: {}}
+        page: {type: integer, minimum: 1}
+        pageSize: {type: integer, minimum: 1, maximum: 100}
+        total: {type: integer, minimum: 0}
+  securitySchemes:
+    WorkerBearer:
+      type: http
+      scheme: bearer
+      description: 仅内部Worker，不能替代用户身份认证。

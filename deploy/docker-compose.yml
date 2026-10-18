@@ -1,0 +1,145 @@
+# ============================================================================
+# RepoPilot 本地基础设施
+# ----------------------------------------------------------------------------
+# 组件：MySQL 8 / RabbitMQ / MinIO / Redis（Redis 为 V1 预留，服务端暂不接入）
+#
+# 使用方式（在仓库根目录执行，确保 .env 生效）：
+#   cp .env.example .env
+#   docker compose --env-file .env -f deploy/docker-compose.yml up -d
+#   docker compose --env-file .env -f deploy/docker-compose.yml ps
+#   docker compose --env-file .env -f deploy/docker-compose.yml down
+#
+# 约定：
+#   * 所有密码来自 .env，本文件不包含任何明文凭据；缺失关键变量时 compose 直接报错退出；
+#   * 宿主机端口全部可覆盖（默认避开本机常见的 3306/6379 占用）；
+#   * 数据使用命名卷持久化，`down` 不会删除数据，`down -v` 才会清空；
+#   * 镜像版本固定，可通过 *_IMAGE 变量替换为内网/镜像站地址。
+# ============================================================================
+
+name: ${COMPOSE_PROJECT_NAME:-repopilot}
+
+services:
+  mysql:
+    image: ${MYSQL_IMAGE:-mysql:8.0.36}
+    container_name: ${COMPOSE_PROJECT_NAME:-repopilot}-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD 未设置，请先创建 .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-repopilot}
+      MYSQL_USER: ${MYSQL_USER:-repopilot}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD 未设置，请先创建 .env}
+      TZ: UTC
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+00:00
+      - --explicit_defaults_for_timestamp=ON
+    ports:
+      - "${MYSQL_PORT:-13306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # 使用业务账号做真实查询级探活，避免仅端口可连但实例未就绪
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks:
+      - repopilot-net
+
+  rabbitmq:
+    image: ${RABBITMQ_IMAGE:-rabbitmq:3.13.7-management}
+    container_name: ${COMPOSE_PROJECT_NAME:-repopilot}-rabbitmq
+    restart: unless-stopped
+    hostname: repopilot-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?RABBITMQ_USER 未设置，请先创建 .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD 未设置，请先创建 .env}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - repopilot-net
+
+  minio:
+    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2025-04-22T22-12-26Z}
+    container_name: ${COMPOSE_PROJECT_NAME:-repopilot}-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER 未设置，请先创建 .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD 未设置，请先创建 .env}
+      MINIO_BROWSER_REDIRECT_URL: http://127.0.0.1:${MINIO_CONSOLE_PORT:-9001}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      # 官方镜像内置 mc（MinIO 官方 compose 示例即用此命令）。
+      # 精简镜像若不含 mc，可改用环境变量覆盖，无需改本文件，例如：
+      #   MINIO_HEALTHCHECK="curl -f http://127.0.0.1:9000/minio/health/live"
+      #   MINIO_HEALTHCHECK="wget -q -O- http://127.0.0.1:9000/minio/health/live"
+      # 先用 `docker compose exec minio mc --version` 确认工具是否存在，不要凭空假设。
+      test: ["CMD-SHELL", "${MINIO_HEALTHCHECK:-mc ready local}"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    networks:
+      - repopilot-net
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7.2.5-alpine}
+    container_name: ${COMPOSE_PROJECT_NAME:-repopilot}-redis
+    restart: unless-stopped
+    # V1 预留：仅提供实例与持久化，服务端代码尚未接入 Redis 客户端
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD 未设置，请先创建 .env}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD 未设置，请先创建 .env}
+    ports:
+      - "${REDIS_PORT:-16379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - repopilot-net
+
+networks:
+  repopilot-net:
+    name: ${COMPOSE_PROJECT_NAME:-repopilot}-net
+    driver: bridge
+
+volumes:
+  mysql-data:
+    name: ${COMPOSE_PROJECT_NAME:-repopilot}-mysql-data
+  rabbitmq-data:
+    name: ${COMPOSE_PROJECT_NAME:-repopilot}-rabbitmq-data
+  minio-data:
+    name: ${COMPOSE_PROJECT_NAME:-repopilot}-minio-data
+  redis-data:
+    name: ${COMPOSE_PROJECT_NAME:-repopilot}-redis-data

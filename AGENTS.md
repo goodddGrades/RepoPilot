@@ -1,0 +1,221 @@
+# AGENTS.md — RepoPilot 开发约束
+
+本文件是**项目级强制约束**，任何参与本仓库开发的 Agent 或人类工程师都必须先阅读本文件，
+再按 [`docs/README.md`](./docs/README.md) 的阅读顺序加载对应契约。
+
+当前进度：**TASK-001 已补验通过**；**TASK-002 已按设计 V1.2.1 实施完成并验收通过**（28 表、V2–V7 迁移、
+持久化实体与基础 Mapper、ULID/JSON/UTC 映射、状态机规则、Surefire/Failsafe 分层、GitHub Actions）。
+数据库验收在**三套真实 MySQL 8** 上执行：本机隔离实例 8.0.22、CI `mysql:8.0.36`（目标版本）与 `mysql:8.0`——
+空库迁移到 V7 成功、字典逐项比对通过、约束场景全部被拒绝。
+依赖联调在**本机与 CI 双环境**闭环：本机 RabbitMQ **3.13.7** 容器（`deploy/docker-compose.yml`）下
+`./mvnw verify` 单元 38 / 集成 38、**Skipped 0**（含 readiness 全依赖 UP 用例，非 assume 跳过）；
+CI run `39118089184` 五个 job 全绿，集成测试同样 0 跳过。
+**TASK-003 及之后不得提前实现。**
+
+实施约束（TASK-002 起生效）：
+- 迁移 SQL 与实体、Mapper 由 `tools/gen_ddl_from_dict.py`、`tools/gen_java_from_dict.py` 从字典生成，
+  **不允许手改生成物**；改字典后重新生成，CI 用 `--check` 校验一致性。
+- 公共组件只复用不重建；`*IT` 只通过真实 MySQL 验证，禁止 H2/SQLite 替代。
+
+---
+
+## 0. 权威顺序（冲突时按此裁决）
+
+1. `docs/contracts/database-schema.json` — 数据库字段、索引、外键、CHECK 的**唯一来源**
+2. `docs/architecture/*` — 跨模块契约（API、事件、可靠性、领域模型）
+3. `docs/modules/*` — 模块内流程
+4. `tasks/TASK-XXX.md` — 当次范围与验收
+5. `AGENTS.md`（本文件） — 持续开发规则
+6. `project_design.md` — **历史草案，无约束力**，仅供追溯
+
+`tasks/TASK-XXX.md` 是**实施边界**，不是第二套架构规范。任务文本与 `docs/` 冲突时，
+**不允许实施方自行选择**：停下冲突部分，报告差异与推荐方案，由负责人先改 `docs/`，
+再改实现。影响契约的改动必须先改文档与差异说明，再改实现和测试，不能"代码先跑起来再说"。
+
+---
+
+## 1. 项目定位
+
+RepoPilot 是面向 Agent 的**轨迹管理、自动化评测与质量分析平台**，不是模型训练平台，
+也不是通用 Agent 开发框架。必须支撑两条评测路径，且**只允许数据入口不同**：
+
+- 路径 A 在线评测：Agent Runner 执行 → 采集轨迹 → 统一评测引擎
+- 路径 B 离线评测：导入规范化 JSON/JSONL → 标准化 → 统一评测引擎
+
+两条路径共用：领域模型、Trace 存储、评测引擎、标注系统、实验报告。
+
+---
+
+## 2. 技术栈（不得擅自替换）
+
+| 层次 | 技术 | 已锁定版本 |
+| --- | --- | --- |
+| 后端 | Java 21 + Spring Boot 3.x | Java 21，Spring Boot 3.5.16 |
+| 持久化 | MyBatis + Flyway + MySQL 8 | mybatis-spring-boot-starter 3.0.5，Flyway 11.7.2，MySQL 8.0.36（CHECK 需 ≥ 8.0.16） |
+| 消息 | RabbitMQ | 3.13.7（容器） |
+| Worker | Python 3.11+ + FastAPI | FastAPI 0.143.3，pydantic 2.14.1 |
+| 前端 | Vue3 + TypeScript + Vite + Element Plus + Pinia + Vue Router + Axios | 见 `repopilot-web/package.json` |
+| 基础设施 | MySQL 8 / RabbitMQ / MinIO / Redis（预留） | 见 `deploy/docker-compose.yml` |
+
+明确**禁止**引入：微服务拆分、Spring Cloud、Kafka、ClickHouse、Elasticsearch、Kubernetes。
+
+**中间件启用时机**（避免误读）：
+
+- MySQL、MinIO 是必要依赖。
+- RabbitMQ 容器与连通性检查已就绪（本机 3.13.7 已实跑，`verify` 中 readiness 全依赖 UP 用例通过），
+  但**业务发布/消费只在 TASK-011 实现**；在此之前不得声明交换机或队列。
+- Redis 仅编排实例，Java 不引入客户端；`/api/health` 中固定 `UNKNOWN` 并标注"预留"。
+
+---
+
+## 3. 不可擅自改变的契约
+
+1. Java 主后端拥有业务数据库写权限；Python 经内部 HTTP 协议领取、续租、回传，**不直连业务库**。
+2. 在线与离线共用 Experiment、Run、EvaluationJob、Result；离线不要求 AgentVersion，但要求已发布的数据集样本。
+3. **ULID 不是 OTel Trace ID**。所有业务时间为 UTC；技术状态与业务结论分离。
+4. 评测必须经 `EvaluationBatch`：同一 Run 可在不同批次重评，同一批次内同一 Run×方案项只有一个 Job；
+   重评复用已封口 Run 与 accepted Attempt，**不得重跑 Agent**，不得覆盖历史批次与结果。
+5. 批次的 Run 集合由 `evaluation_batch_runs` 固定，创建后不可增删；批次与 Run 必须同实验，
+   由复合外键保证，不靠服务层自觉。报告未传批次参数时固定返回初始批次。
+6. 已发布版本内容不可原地修改；重试保留历史；已完成 Run 与最终结果不可覆盖。
+7. 必须实现数据库主外键与唯一约束，**不能只写实体注解**；每条外键都要有显式左前缀索引，
+   不允许依赖 InnoDB 隐式建索引。
+8. 终态写入、轨迹写入、续租均校验当前 Attempt 与租约；过期 Worker 不得覆盖新任务。
+9. 密钥通过运行环境中的引用解析；版本快照、Trace、错误日志不得持有明文密钥。
+10. 缺失证据不得伪造结论，应返回 `INDETERMINATE` / `NOT_APPLICABLE`。
+
+---
+
+## 4. 架构约束
+
+1. `repopilot-server` 是**模块化单体**：单进程、按 `com.repopilot.modules.<module>` 分包。
+   模块划分以 `docs/architecture/01-system-overview.md` 为准（8 个：agent、dataset、evaluationconfig、
+   experiment、trace、evaluation、annotation、importing）。`report` 不建空壳：报告是 experiment 的
+   读取视图，在 TASK-010 需要时落地。
+2. 模块之间只能通过 `application` 层服务接口协作；**禁止跨模块直接访问他人 Mapper 或表**。
+3. Mapper 位于基础设施层，Controller 返回 DTO，事务由业务服务控制；不返回 Entity 作为 API DTO。
+4. `repopilot-worker` 负责 Agent 执行与评测算子；Java 侧不实现 Agent 执行逻辑。
+5. 在线/离线共用一套 Evaluation/Annotation/Report 服务；**不得为两条路径复制业务实现**。
+6. 所有数据库变更必须通过新增 Flyway 迁移脚本，**已执行脚本不可修改**（当前最高版本为 V1 空白基线，下一版从 V2 起）。
+7. 所有对外接口必须返回统一响应结构，异常必须经全局异常处理；接口路径业务前缀 `/api/v1`，
+   Worker 前缀 `/internal/v1`，健康检查保留 `/api/health`。
+8. 状态流转必须校验前置状态，禁止直接改写终态；重试是新 Attempt，不是把终态改回 RUNNING。
+9. 分页、排序、幂等键遵循 `docs/architecture/04-api-contract.md`，不自创第二套格式。
+
+---
+
+## 5. 目录职责
+
+```
+repopilot-server/   Java 后端（模块化单体）
+repopilot-worker/   Python Worker（Runner / Evaluator）
+repopilot-web/      Vue3 前端
+deploy/             Docker Compose 及基础设施说明
+docs/               设计基线（唯一来源，见 docs/README.md）
+tasks/              分阶段任务说明与验收记录
+examples/           规范样例（不含真实密钥，不可直接用于生产）
+tools/              设计自检工具（verify_design.py）
+```
+
+---
+
+## 6. 标准命令
+
+```bash
+# 设计自检
+python -m venv .tools-venv && ./.tools-venv/Scripts/pip install -r tools/requirements-design.txt
+python tools/verify_design.py
+
+# 基础设施
+cp .env.example .env
+docker compose --env-file .env -f deploy/docker-compose.yml up -d
+docker compose --env-file .env -f deploy/docker-compose.yml ps
+docker compose --env-file .env -f deploy/docker-compose.yml down
+
+# 后端
+cd repopilot-server
+set -a && source ../.env && set +a          # Git Bash / WSL 载入环境变量
+./mvnw test                                  # 单元测试（不依赖基础设施）
+./mvnw verify                                # 单元 + 集成（Failsafe，需基础设施）
+./mvnw spring-boot:run                       # 启动，默认 8080
+
+# 集成测试用的隔离 MySQL（Docker 不可用时的替代；只监听 127.0.0.1）
+./tools/it-mysql.sh start                    # 启动（首次自动初始化，root 密码不再为空）
+./tools/it-mysql.sh reset                    # 整库重建（迁移被打断后必须执行）
+eval "$(./tools/it-mysql.sh env)"            # 导出 REPOPILOT_IT_DB_*，供 mvnw 使用
+./tools/it-mysql.sh stop                     # 测试结束必须停止，不常驻
+
+# Worker
+cd repopilot-worker
+python -m venv .venv && . .venv/Scripts/activate   # Windows；Linux/macOS 用 .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest
+uvicorn app.main:app --port 8000
+
+# 前端
+cd repopilot-web
+npm install
+npm run dev        # 5173
+npm run build      # 类型检查 + 生产构建
+```
+
+---
+
+## 7. 工作方式
+
+1. 开工先 `git status --short`，记录分支与已有改动；**不撤销用户工作**。
+2. 读 `docs/README.md` → 当前 TASK → 其 Required reads → 对应契约。不凭记忆写字段。
+3. 检查已有构建文件、锁文件、目录与 Flyway 历史。设计没有声明仓库已使用某版本时，以仓库实际锁定版本为准。
+4. 仅实现当前 TASK，不提前实现后续业务，不重构无关模块。
+5. 普通实现细节自行决定并记录；影响数据库语义、跨语言契约或后续 TASK 的改动，先写具体差异与推荐方案，
+   继续不受影响的工作，等负责人决定。**不能以"优化"为由引入新中间件或改变架构。**
+
+### 数据库变更流程（V2–V7 已冻结，本节为强制规则）
+
+"改字典还是改 SQL"必须只有一个答案，否则 TASK-006 前后必然出现"手工改了 Entity，下次生成又被覆盖"。
+
+1. `docs/contracts/database-schema.json` 是**领域模型与目标 Schema 的设计依据**。改结构先改字典，再谈迁移。
+2. **已执行的 Flyway 迁移永不修改。** `docs/contracts/migrations.lock.json` 记录 V2–V7 的 sha256，
+   生成器 `--check` 会校验；改动历史迁移 CI 直接失败。
+3. 冻结后的结构变更**只能新增迁移**（V8、V9…）。生成器不再覆写已冻结文件，写入时跳过并给出提示。
+4. 生成器目前只负责**基线生成**，尚不支持"按字典 diff 出增量迁移"。因此增量迁移**手写**，写完后必须：
+   - 同步 `database-schema.json`；
+   - 重新生成 Entity / Mapper（`tools/gen_java_from_dict.py`）；
+   - 在真实库上跑 `SchemaDictionaryIT` —— 它把实际库与字典逐项比对，是"字典 ↔ 库"一致性的最终关口
+     （冻结后字典与基线既然允许分离，这个测试就是唯一权威）；
+   - 全绿后执行 `python tools/gen_ddl_from_dict.py --freeze`，把新迁移纳入冻结集合。
+5. Entity / Mapper 是**生成物，不要手改**。要新字段就改字典再重新生成，否则下次生成会被覆盖。
+6. 迁移中途被打断时，MySQL 会留下"部分已完成"的 DDL（DDL 非事务性），此时必须整库重建
+   （`./tools/it-mysql.sh reset`），**不要手工补 DDL 掩盖**——半完成状态比报错更难查。
+
+---
+
+## 8. 测试与交付
+
+- 使用**真实 MySQL 8** 做迁移、约束与 UTC 映射测试，不以 H2 结果替代；无法运行 Docker 时如实记录阻塞。
+- 后端完整验收使用 `./mvnw verify`（Surefire 单测 + Failsafe 集成）；`./mvnw test` 不代表集成通过。
+  CI 未实际运行时必须写"未运行"，不得用"workflow 已配置"代替"通过"。
+- 测试使用独立库与测试凭证；禁止在生产启用 Flyway Clean，禁止自动删库重建。
+- 不添加公开假 API 来测试公共组件，用测试 Controller / MockMvc。
+- 不用随意延时掩盖竞争条件，用明确同步点测试租约与并发。
+- 不吞异常、不伪造成功结果、不跳过状态校验。
+- 每次交付必须给出：分支与 Commit ID · 变更文件与行为 · 数据库/API/事件契约变化 ·
+  **实际执行命令、退出码、通过/失败/跳过数量** · 未执行检查及环境原因 · 已知问题与下一 TASK 前置。
+- 不虚构压测收益，不把设计目标写成已完成成果。
+- 已完成授权的任务可创建本地 Git commit；**不自动 push、部署或发送外部消息**。
+  push 需**逐次显式授权**，一次授权不外推到后续 TASK；无授权时交付报告只写 commit ID 与"未 Push"。
+- 禁止 `git push --force`、禁止改写已推送历史。若远程与本地无共同祖先，用
+  `--allow-unrelated-histories` 合并（冲突保留本地实际内容），不覆盖远程。
+- 任务完成即停，不自动进入下一 TASK。
+
+---
+
+## 9. 红线
+
+- 不得擅自引入新框架、中间件或数据库。
+- 不得提交任何真实凭据；`.env` 已忽略，只提交 `.env.example`（仅占位符）。
+- 不得修改已执行的 Flyway 迁移；不得用 `repair` 掩盖半完成变更。
+- 不得把离线缺失的证据伪造成评测结果。
+- 不得绕过状态机直接修改终态。
+- 不得宣称未测试的功能已完成。
+- 不得在 TASK-001 阶段创建业务表或业务接口（当前已交付，保持为零业务表）。

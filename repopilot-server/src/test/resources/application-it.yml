@@ -1,0 +1,26 @@
+# 集成测试专用配置：只连接测试号 MySQL，不读取开发 .env，避免测试误连开发库。
+# 变量缺失时 Spring 直接启动失败（而不是静默跳过），这样"没跑"与"跑过"不会混淆。
+spring:
+  datasource:
+    url: jdbc:mysql://${REPOPILOT_IT_DB_HOST}:${REPOPILOT_IT_DB_PORT:3306}/${REPOPILOT_IT_DB_NAME:repopilot_it}?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&characterEncoding=utf8&rewriteBatchedStatements=true
+    username: ${REPOPILOT_IT_DB_USER:root}
+    password: ${REPOPILOT_IT_DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: 8
+      pool-name: repopilot-it
+  flyway:
+    enabled: true
+    # 测试只允许正向迁移，禁止 clean：数据库验收要求"空库能建起来"，
+    # 而不是"每次先删库再建起来"。
+    clean-disabled: true
+    validate-on-migrate: true
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+
+logging:
+  level:
+    root: WARN
+    com.repopilot: INFO
+    org.springframework.test: WARN

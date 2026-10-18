@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "eventId": "01K7R1XQ000000000000000001",
+  "runId": "01K7R1XQ000000000000000002",
+  "runAttemptId": "01K7R1XQ000000000000000003",
+  "sequenceNo": 1,
+  "eventType": "RUN_STARTED",
+  "occurredAt": "2026-10-17T04:00:00.000Z",
+  "payload": {
+    "runnerType": "MOCK"
+  }
+}

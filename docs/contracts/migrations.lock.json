@@ -1,0 +1,12 @@
+{
+  "note": "已发布迁移的 sha256 冻结记录。冻结后生成器不再覆写这些文件；表结构变更必须新增迁移，并同步字典，由 SchemaDictionaryIT 用真实库校验最终状态。",
+  "generator": "tools/gen_ddl_from_dict.py",
+  "frozen": {
+    "V2__identity_and_configuration.sql": "24f84dee2d236ae8dcc42c027be334186d238b9ff7570fdb7daa63d8cee483b8",
+    "V3__experiment_and_execution.sql": "e4b2469edd75e80184cb389b49aa88c4f97214be2e2329ec435f3d15389f8009",
+    "V4__evaluation_batch_and_result.sql": "76c459d404f978422f910a4d87d1dbfb57b4a02d0d67fde3d8257115241d47ce",
+    "V5__annotation_and_import.sql": "767fccee4eb602864dcabc9886b64d5467182997bd7e8f381a45360c44deaad5",
+    "V6__reliability_helpers.sql": "ee9f7d80a0cc606fb09588ebe550ddaa17c6a07487b0ae8ee5e97aa5d3fb17b4",
+    "V7__deferred_foreign_keys.sql": "fe8c0c5f09ebe81798d165098555edcab91e46117440b4a82b0bbbc45b9b0091"
+  }
+}
