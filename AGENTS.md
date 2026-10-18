@@ -3,8 +3,9 @@
 本文件是**项目级强制约束**，任何参与本仓库开发的 Agent 或人类工程师都必须先阅读本文件，
 再按 [`docs/README.md`](./docs/README.md) 的阅读顺序加载对应契约。
 
-当前进度：**TASK-001 已完成**（Monorepo + 基础设施编排 + 三端基础工程 + 设计包合并）。
-TASK-002 及之后尚未开始，不得提前实现。
+当前进度：**TASK-001 有条件验收通过**（三端基础工程 + 公共组件 + 基础设施编排；真实 MySQL/RabbitMQ/Flyway 实跑转入 CI 验收）。
+**TASK-002 文本已修订为可执行版本，尚未开始实现**；未经负责人确认不得进入编码。
+TASK-003 及之后不得提前实现。
 
 ---
 
@@ -17,8 +18,9 @@ TASK-002 及之后尚未开始，不得提前实现。
 5. `AGENTS.md`（本文件） — 持续开发规则
 6. `project_design.md` — **历史草案，无约束力**，仅供追溯
 
-文档与实现不一致时，先判断是文档过期还是实现跑偏：影响契约的改动必须先改文档与差异说明，
-再改实现和测试，不能"代码先跑起来再说"。
+`tasks/TASK-XXX.md` 是**实施边界**，不是第二套架构规范。任务文本与 `docs/` 冲突时，
+**不允许实施方自行选择**：停下冲突部分，报告差异与推荐方案，由负责人先改 `docs/`，
+再改实现。影响契约的改动必须先改文档与差异说明，再改实现和测试，不能"代码先跑起来再说"。
 
 ---
 
@@ -60,11 +62,13 @@ RepoPilot 是面向 Agent 的**轨迹管理、自动化评测与质量分析平�
 1. Java 主后端拥有业务数据库写权限；Python 经内部 HTTP 协议领取、续租、回传，**不直连业务库**。
 2. 在线与离线共用 Experiment、Run、EvaluationJob、Result；离线不要求 AgentVersion，但要求已发布的数据集样本。
 3. **ULID 不是 OTel Trace ID**。所有业务时间为 UTC；技术状态与业务结论分离。
-4. 已发布版本内容不可原地修改；重试保留历史；已完成 Run 与最终结果不可覆盖。
-5. 必须实现数据库主外键与唯一约束，**不能只写实体注解**。
-6. 终态写入、轨迹写入、续租均校验当前 Attempt 与租约；过期 Worker 不得覆盖新任务。
-7. 密钥通过运行环境中的引用解析；版本快照、Trace、错误日志不得持有明文密钥。
-8. 缺失证据不得伪造结论，应返回 `INDETERMINATE` / `NOT_APPLICABLE`。
+4. 评测必须经 `EvaluationBatch`：同一 Run 可在不同批次重评，同一批次内同一 Run×方案项只有一个 Job；
+   重评复用已封口 Run 与 accepted Attempt，**不得重跑 Agent**，不得覆盖历史批次与结果。
+5. 已发布版本内容不可原地修改；重试保留历史；已完成 Run 与最终结果不可覆盖。
+6. 必须实现数据库主外键与唯一约束，**不能只写实体注解**。
+7. 终态写入、轨迹写入、续租均校验当前 Attempt 与租约；过期 Worker 不得覆盖新任务。
+8. 密钥通过运行环境中的引用解析；版本快照、Trace、错误日志不得持有明文密钥。
+9. 缺失证据不得伪造结论，应返回 `INDETERMINATE` / `NOT_APPLICABLE`。
 
 ---
 
@@ -72,7 +76,8 @@ RepoPilot 是面向 Agent 的**轨迹管理、自动化评测与质量分析平�
 
 1. `repopilot-server` 是**模块化单体**：单进程、按 `com.repopilot.modules.<module>` 分包。
    模块划分以 `docs/architecture/01-system-overview.md` 为准（8 个：agent、dataset、evaluationconfig、
-   experiment、trace、evaluation、annotation、importing；当前工程的 `report` 待 TASK-002 归位）。
+   experiment、trace、evaluation、annotation、importing）。`report` 不建空壳：报告是 experiment 的
+   读取视图，在 TASK-010 需要时落地。
 2. 模块之间只能通过 `application` 层服务接口协作；**禁止跨模块直接访问他人 Mapper 或表**。
 3. Mapper 位于基础设施层，Controller 返回 DTO，事务由业务服务控制；不返回 Entity 作为 API DTO。
 4. `repopilot-worker` 负责 Agent 执行与评测算子；Java 侧不实现 Agent 执行逻辑。
@@ -117,8 +122,8 @@ docker compose --env-file .env -f deploy/docker-compose.yml down
 cd repopilot-server
 set -a && source ../.env && set +a          # Git Bash / WSL 载入环境变量
 ./mvnw test                                  # 单元测试（不依赖基础设施）
+./mvnw verify                                # 单元 + 集成（Failsafe，需基础设施）
 ./mvnw spring-boot:run                       # 启动，默认 8080
-./mvnw test -Dtest=RepoPilotServerApplicationIT   # 集成测试（需基础设施就绪）
 
 # Worker
 cd repopilot-worker
@@ -150,6 +155,8 @@ npm run build      # 类型检查 + 生产构建
 ## 8. 测试与交付
 
 - 使用**真实 MySQL 8** 做迁移、约束与 UTC 映射测试，不以 H2 结果替代；无法运行 Docker 时如实记录阻塞。
+- 后端完整验收使用 `./mvnw verify`（Surefire 单测 + Failsafe 集成）；`./mvnw test` 不代表集成通过。
+  CI 未实际运行时必须写"未运行"，不得用"workflow 已配置"代替"通过"。
 - 测试使用独立库与测试凭证；禁止在生产启用 Flyway Clean，禁止自动删库重建。
 - 不添加公开假 API 来测试公共组件，用测试 Controller / MockMvc。
 - 不用随意延时掩盖竞争条件，用明确同步点测试租约与并发。
