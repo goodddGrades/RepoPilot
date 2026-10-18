@@ -19,6 +19,12 @@ spring:
       write-dates-as-timestamps: false
   lifecycle:
     timeout-per-shutdown-phase: 20s
+  servlet:
+    multipart:
+      # 与契约的 20 MiB 文件上限对齐：超限在容器层就被拒绝（413），
+      # 而不是先把整个文件读进内存再交给解析器判断。
+      max-file-size: 20MB
+      max-request-size: 21MB
   threads:
     virtual:
       # Java 21 虚拟线程：仅作为执行器，不改变任何业务语义
@@ -73,6 +79,16 @@ info:
     name: ${spring.application.name}
     version: ${spring.application.version}
     description: RepoPilot 轨迹评测与质量分析平台 - 核心后端
+
+repopilot:
+  storage:
+    # V1 只有 local；未知取值会在启动时直接失败（不静默回退）
+    type: ${STORAGE_TYPE:local}
+    local:
+      # 必须是**不进版本库**的目录。默认 var/ 已在 .gitignore 中排除；
+      # 换到别处时同样要确认不在 Git 工作区内。
+      root: ${STORAGE_LOCAL_ROOT:var/storage}
+      max-bytes: 67108864
 
 logging:
   level:

@@ -21,6 +21,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.List;
@@ -96,6 +97,18 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleNoResource(NoResourceFoundException ex) {
         log.warn("资源不存在: {}", ex.getResourcePath());
         return build(ErrorCode.RESOURCE_NOT_FOUND, ErrorCode.RESOURCE_NOT_FOUND.defaultMessage(), null);
+    }
+
+    /**
+     * 上传超过容器上限。
+     *
+     * <p>必须在读取请求体阶段就转成 413：契约里"超过 20 MiB 整批拒绝且不写入任何数据"，
+     * 若落到 {@code INTERNAL_ERROR}，调用方会以为服务出错并重试，白传一遍大文件。
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMaxUploadSize(MaxUploadSizeExceededException ex) {
+        log.warn("上传内容超过上限: {}", ex.getMessage());
+        return build(ErrorCode.PAYLOAD_TOO_LARGE, "上传文件超过大小上限", null);
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)

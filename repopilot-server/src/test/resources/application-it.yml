@@ -19,6 +19,15 @@ mybatis:
   configuration:
     map-underscore-to-camel-case: true
 
+repopilot:
+  storage:
+    type: local
+    local:
+      # 测试上传文件写到 target/ 下：该目录已被 .gitignore 排除，
+      # 同时保证测试不会污染开发环境的 var/storage。
+      root: ${REPOPILOT_IT_STORAGE_ROOT:target/it-storage}
+      max-bytes: 67108864
+
 logging:
   level:
     root: WARN
