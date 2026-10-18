@@ -4,6 +4,7 @@ import com.repopilot.common.api.ApiResponse;
 import com.repopilot.common.api.ErrorCode;
 import com.repopilot.common.api.FieldViolation;
 import com.repopilot.common.exception.BusinessException;
+import com.repopilot.common.jsonl.JsonlParseException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
@@ -42,8 +43,23 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResponse<Void>> handleBusiness(BusinessException ex) {
-        log.warn("业务异常: code={}, message={}", ex.getErrorCode(), ex.getMessage());
-        return build(ex.getErrorCode(), ex.getMessage(), null);
+        List<FieldViolation> errors = ex.getErrors().isEmpty() ? null : ex.getErrors();
+        log.warn("业务异常: code={}, message={}, fields={}", ex.getErrorCode(), ex.getMessage(),
+                errors == null ? "-" : errors);
+        return build(ex.getErrorCode(), ex.getMessage(), errors);
+    }
+
+    /**
+     * 文件级解析失败（超限、编码错、单行过长）。
+     *
+     * <p>这类异常在写库之前抛出，因此响应错误即代表"库内零写入"。
+     */
+    @ExceptionHandler(JsonlParseException.class)
+    public ResponseEntity<ApiResponse<Void>> handleJsonlParse(JsonlParseException ex) {
+        log.warn("导入文件不可接受: code={}, field={}, message={}",
+                ex.getErrorCode(), ex.getField(), ex.getMessage());
+        return build(ex.getErrorCode(), ex.getMessage(),
+                List.of(new FieldViolation(ex.getField(), ex.getMessage())));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

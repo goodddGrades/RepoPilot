@@ -177,6 +177,16 @@ public final class Transitions {
         requireAllows(allows(from, to), "Version", from, to);
     }
 
+    /**
+     * Agent / Dataset 的生命周期转换校验。
+     *
+     * <p>只允许 {@code ACTIVE→ARCHIVED}。归档后资源仍可读、仍可被历史引用，
+     * 但不能创建新版本，也不能发布其下版本——这两条由业务层检查父状态。
+     */
+    public static void require(LifecycleStatus from, LifecycleStatus to) {
+        requireAllows(allows(from, to), "Lifecycle", from, to);
+    }
+
     private static void requireAllows(boolean allowed, String aggregate, Enum<?> from, Enum<?> to) {
         if (!allowed) {
             throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
