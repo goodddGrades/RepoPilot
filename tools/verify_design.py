@@ -4,6 +4,7 @@ from datetime import datetime
 from copy import deepcopy
 import json
 import re
+import subprocess
 import sys
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
@@ -22,19 +23,35 @@ def load(path):
 
 fmt = FormatChecker()
 
-# 真实仓库包含依赖目录与构建产物，其中自带大量第三方 README；
-# 它们不属于设计文档范围，检查时跳过，避免在 node_modules 等目录误报断链。
+# 文档检查范围 = 进版本库的文档 + 未被忽略的新文档。
+# 不用裸 rglob：仓库里存在被 .gitignore 忽略的目录（tmp/、.workbuddy/、
+# RepoPilot-design-v1.0/ 等）与依赖目录，它们不属于设计文档范围。
+# 早期版本靠目录名黑名单，漏一个就让本地项数高于 CI（实测 1294 vs 1251），
+# 使"本地 PASS 项数"不可比；改为以 git 的忽略规则为准，黑名单只作回退。
 SKIP_DIRS = {
     '.git', '.idea', '.vscode', 'node_modules', 'target', 'dist', 'build',
-    '.venv', 'venv', '.tools-venv', '__pycache__', 'logs',
+    '.venv', 'venv', '.tools-venv', '__pycache__', 'logs', 'tmp', '.workbuddy',
 }
 
 
 def iter_markdown():
-    for path in sorted(ROOT.rglob('*.md')):
-        if any(part in SKIP_DIRS for part in path.relative_to(ROOT).parts):
-            continue
-        yield path
+    try:
+        out = subprocess.run(
+            ['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', '*.md'],
+            cwd=ROOT, capture_output=True, check=True,
+        ).stdout.decode('utf-8')
+        names = [n for n in out.split('\0') if n]
+    except (OSError, subprocess.CalledProcessError):
+        # 非 git 环境（例如只解压了归档）退化为目录遍历
+        names = [
+            p.relative_to(ROOT).as_posix()
+            for p in sorted(ROOT.rglob('*.md'))
+            if not any(part in SKIP_DIRS for part in p.relative_to(ROOT).parts)
+        ]
+    for name in sorted(names):
+        path = ROOT / name
+        if path.exists():
+            yield path
 
 
 @fmt.checks('date-time', raises=(ValueError, TypeError))
