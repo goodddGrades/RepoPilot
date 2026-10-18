@@ -14,8 +14,9 @@
 | JSON / UTC / ULID / 枚举映射 | 集成测试通过（含非 UTC JVM 场景） |
 | 公共组件复用、契约未改 | 复用；仅错误码枚举值收敛 + 映射扩展 |
 | Surefire / Failsafe 分层 | 落实，`mvn verify` 真正执行 `*IT` |
-| GitHub Actions | **已实际运行**：4/4 job 通过（run `39116300359`），集成测试 0 跳过 |
-| 真实库验收 | 本地 MySQL 8.0.22 + CI `mysql:8.0` 双环境通过 |
+| GitHub Actions | **已实际运行**：5/5 job 通过（run `39118089184`，双 MySQL 版本矩阵），集成测试 0 跳过 |
+| RabbitMQ 连通 | **本机与 CI 均已执行**：本机 3.13.7 容器下 `verify` 38/38、Skipped 0（readiness 全 UP 用例真实通过） |
+| 真实库验收 | 本地 MySQL 8.0.22 + CI `mysql:8.0.36`（目标版本）与 `mysql:8.0` 三环境通过 |
 
 ## 2. 交付物
 
@@ -92,27 +93,33 @@ Job 的 Run 未登记、Job 引用其他方案版本的 planItem、同批同 Run
 
 ## 3. 实际执行记录
 
-环境：Windows + 本地隔离 MySQL 实例（`mysqld --no-defaults` 独立数据目录，端口 13306，MySQL **8.0.22**），
-JDK 21.0.10（`~/.jdks/ms-21.0.10`）。没有使用 Docker（本机 `wsl.exe` 被安全策略拦截），
-也没有用 H2/SQLite 替代。
+环境：Windows + 本地隔离 MySQL 实例（`tools/it-mysql.sh` 启动，独立数据目录，**仅监听 `127.0.0.1`**，
+端口 13306，MySQL **8.0.22**，专用账号 `repopilot`）+ 本机 RabbitMQ **3.13.7**
+（Docker Desktop + `deploy/docker-compose.yml` 的 `rabbitmq:3.13.7-management`，健康检查 `healthy`）。
+JDK 21.0.10（`~/.jdks/ms-21.0.10`）。**没有用 H2/SQLite 替代**。
 
 | 命令 | 目录 | 结果 |
 | --- | --- | --- |
 | `./mvnw -o test` | `repopilot-server/` | 38 通过，0 失败，0 跳过，退出码 0 |
-| `./mvnw -o verify` | `repopilot-server/` | 单测 38 + 集成 38（1 跳过），BUILD SUCCESS |
-| `python tools/verify_design.py` | 仓库根 | PASS，1278 项，28 表 |
-| `python tools/gen_ddl_from_dict.py --check` | 仓库根 | 6 个迁移与字典一致 |
+| `./mvnw -o verify`（本机 RabbitMQ 在场，`REPOPILOT_IT_REQUIRE_ALL_UP=true`） | `repopilot-server/` | 单测 38 + 集成 38，**0 跳过**，BUILD SUCCESS |
+| `python tools/verify_design.py` | 仓库根 | PASS，1283 项，28 表 |
+| `python tools/gen_ddl_from_dict.py --check` | 仓库根 | 6 个迁移与字典一致（含冻结校验） |
 | `python tools/gen_java_from_dict.py --check` | 仓库根 | 76 个 Java 文件与字典一致 |
 | `python -m pytest -q` | `repopilot-worker/` | 14 通过 |
 | `npm run build` | `repopilot-web/` | 构建成功（仅有 chunk 体积提示） |
 
-集成测试连接参数：`REPOPILOT_IT_DB_HOST=127.0.0.1`、`PORT=13306`、`NAME=repopilot_it`、`USER=root`、空密码。
-测试库在运行前为空库，Flyway 从 V1 建到 V7。
+集成测试连接参数：`REPOPILOT_IT_DB_*` 指向 `127.0.0.1:13306/repopilot_it`（专用账号，非 root），
+`SPRING_RABBITMQ_*` 指向 `127.0.0.1:5672`，并置 `REPOPILOT_IT_REQUIRE_ALL_UP=true`。
+测试库运行前为空库，Flyway 从 V1 建到 V7。
 
-**唯一跳过项**：`ApiHealthIT.readinessShouldBeUpWhenEveryDependencyIsAvailable`，
-它需要 RabbitMQ，本机没有；该用例由 `REPOPILOT_IT_REQUIRE_ALL_UP=true` 开启。
-该项已在 CI 中真实执行并通过（见 §3.3），因此"未运行"清单为空。
-除它之外没有被 `@Disabled` 或 assumption 静默跳过的测试。
+**没有跳过项。** 早前"本机无 RabbitMQ"时被跳过的那条
+`ApiHealthIT.readinessShouldBeUpWhenEveryDependencyIsAvailable`，在本机 broker 就位后已实际执行并通过
+（`ApiHealthIT` 4/4）。全仓 `*IT` 无 `@Disabled`、无 assumption 静默跳过。
+
+一个必须记下的环境坑：在 Git Bash 中把 `SPRING_RABBITMQ_VIRTUAL_HOST` 设为 `/` 会被 MSYS 转成
+Windows 路径，Spring 去连一个名为 `D:/WorkBuddy/.../PortableGit/` 的 vhost，`readiness` 因此返回 503
+而其余 37 条照常通过（**看起来像 broker 故障，其实是路径转换**）。正确做法是不设该变量——Spring Boot
+默认就是 `/`。Ubuntu CI 无此问题。
 
 ### 3.1 空库复现（第二轮独立验证）
 
@@ -164,7 +171,7 @@ JDK 21.0.10（`~/.jdks/ms-21.0.10`）。没有使用 Docker（本机 `wsl.exe` �
 | Worker（pytest） | 12s | ✓ |
 | Web（构建） | 23s | ✓ |
 
-关键差异——**CI 上 Skipped 为 0**：
+关键差异——**本机与 CI 两端 Skipped 都是 0**：
 
 ```
 [INFO] Tests run: 38, Failures: 0, Errors: 0, Skipped: 0   ← 单元测试
@@ -172,8 +179,8 @@ JDK 21.0.10（`~/.jdks/ms-21.0.10`）。没有使用 Docker（本机 `wsl.exe` �
 [INFO] BUILD SUCCESS
 ```
 
-本地因无 RabbitMQ 而跳过的那条 readiness 用例，在 CI 上随 `rabbitmq:3.13` service 一起执行并通过。
-因此 TASK-002 的"未运行测试"清单，在 CI 维度上**为空**。
+readiness 全依赖 UP 的那条用例，在本机（RabbitMQ `3.13.7` 容器）与 CI（`rabbitmq:3.13` service）
+两个环境都真实执行并通过。因此 TASK-002 的"未运行测试"清单**为空**，而且不是靠跳过换来的。
 
 **目标版本验证的结果**：`mysql:8.0.36`（`deploy/docker-compose.yml` 锁定版本）上，
 迁移从空库建到 V7、`SchemaDictionaryIT` 的 canonical 比对、`ConstraintIT` 的 16 个拒绝场景
@@ -208,7 +215,7 @@ CI 仅有若干 annotation 提示（`actions/checkout@v4`、`setup-java@v4` 等�
 | root 密码 | 空密码 | 首次启动即设置本地测试密码；空密码登录实测被拒（`ERROR 1045`） |
 | 业务账号 | 直接用 root | 专用 `repopilot`，只有 `repopilot_it.*` / `repopilot_ddl_probe.*` 权限；读 `mysql.user` 被拒（`ERROR 1142`） |
 | 启停 | 手工敲命令，忘了就常驻 | `tools/it-mysql.sh start\|status\|stop\|env\|reset`，`status` 会显式报告监听地址 |
-| 当前状态 | 实例常驻 | **已停止**，端口 13306 已释放 |
+| 当前状态 | 实例常驻 | 默认不常驻：需要时 `start`，用完 `stop`；本次验证期间运行，结束后已 `stop`（13306 端口释放） |
 
 同一轮还遇到一件值得记录的事：一次 `mvnw` 被中断（SIGTERM）恰好落在 `V7` 执行中间，
 MySQL 的 DDL 非事务性，留下了若干个已提交的 `ALTER TABLE ADD CONSTRAINT`，
@@ -216,6 +223,22 @@ MySQL 的 DDL 非事务性，留下了若干个已提交的 `ALTER TABLE ADD CON
 `Duplicate foreign key constraint name 'fk_evaluation_runs_id_active_attempt_id'`。
 这类半完成状态**不能手工补 DDL**，只能整库重建 —— 这就是 `tools/it-mysql.sh reset` 存在的原因。
 重建后用专用账号重跑 `SchemaMigrationIT`：4 passed / 0 failed / 0 skipped。
+
+### 3.5 RabbitMQ 在本机补齐（原"仅 CI 验证"的缺口关闭）
+
+此前唯一的环境缺口是"本机没有 broker，readiness 全 UP 用例只能等 CI"。现已在本机补上，
+且不是用 mock 或内存实现替代：
+
+| 项 | 实测 |
+| --- | --- |
+| Broker | RabbitMQ **3.13.7**（`rabbitmq:3.13.7-management`，Docker，`healthy`），Erlang/OTP 26 |
+| 起法 | `docker compose --env-file .env -f deploy/docker-compose.yml up -d rabbitmq`，端口/账号/vhost 全部取自 `.env` |
+| 项目验收 | `./mvnw verify`：单测 38 / 集成 38，**Skipped 0**，含 `readinessShouldBeUpWhenEveryDependencyIsAvailable` |
+| 连通证据 | `ApiHealthIT` 通过真实 HTTP 打 `/actuator/health/readiness`，`status=UP` 且含 `rabbit` 明细 |
+| 最小收发闭环 | 独立临时工程（不在仓库内）验证 `publisher confirm` 逐条 ack、`MANUAL` + `prefetch=1`、不 ack 时进入 unacked、ack 后 ready 归零；临时队列用完即删 |
+| 业务边界 | **未声明任何交换机/队列**；rabbit 容器只承担连通性与健康检查，业务发布/消费仍属 TASK-011 |
+
+细节见 [`rabbitmq-local-verification.md`](./rabbitmq-local-verification.md)。
 
 ## 4. 公共组件的复用与改动
 
@@ -253,7 +276,7 @@ MySQL 的 DDL 非事务性，留下了若干个已提交的 `ALTER TABLE ADD CON
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
 | GitHub Actions 实际运行 | **已完成** | run `39118089184` 5/5 job 全绿（双 MySQL 版本矩阵），集成测试 0 跳过 |
-| RabbitMQ 相关断言 | 已在 CI 执行 | 本机无 RabbitMQ；readiness 全 UP 用例在 CI 通过 |
+| RabbitMQ 相关断言 | **本机与 CI 均已执行** | 本机 3.13.7 容器下 `verify` 38/38、Skipped 0；CI 由 `rabbitmq:3.13` service 提供，结论一致（§3.5） |
 | MySQL 版本覆盖 | 8.0.22（本机）+ **8.0.36 与 8.0（CI 矩阵）** | 三个版本均通过，未出现 `information_schema` 文本差异 |
 | 业务功能 | 未实现 | 按范围禁止：无 API、无页面、无 Runner/Judge |
 | CI action 版本 | 未升级 | `checkout@v4` / `setup-java@v4` 基于 Node 20，仅有弃用提示，不影响结论 |
@@ -261,8 +284,9 @@ MySQL 的 DDL 非事务性，留下了若干个已提交的 `ALTER TABLE ADD CON
 
 ## 7. 下一步
 
-1. ~~Push 到 `develop` 并跑 CI~~ **已完成**：run `39116300359`，4/4 job 通过。
-2. 将 `develop` 合并进 `main`（PR 已建，待负责人评审后决定是否合并）。
-3. 授权后进入 TASK-003（Agent 与数据集管理），复用本任务的实体、Mapper 与状态机。
-4. 若后续 CI 环境（如 `ubuntu-latest` 迁移到 Ubuntu 26）导致 `information_schema` 文本差异，
+1. ~~Push 到 `develop` 并跑 CI~~ **已完成**：run `39118089184`，5/5 job 通过（双 MySQL 版本矩阵）。
+2. ~~本机 RabbitMQ 验证~~ **已完成**：3.13.7 容器下 `verify` 38/38、Skipped 0（§3.5）。
+3. 将 `develop` 合并进 `main`（PR #1 已建，待负责人评审后决定是否合并）。
+4. 授权后进入 TASK-003（Agent 与数据集管理），复用本任务的实体、Mapper 与状态机。
+5. 若后续 CI 环境（如 `ubuntu-latest` 迁移到 Ubuntu 26）导致 `information_schema` 文本差异，
    **先修 canonical 归一化逻辑，不放宽断言**——放宽断言等于放弃这项检查。

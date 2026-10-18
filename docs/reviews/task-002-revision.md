@@ -111,4 +111,6 @@ TASK-001 的 19 个单测在改动后必须全部重新通过。
 原列两项待确认，现均已裁决，详见 [task-002-freeze.md](./task-002-freeze.md)：
 
 1. 离线 Run **必须**绑定 DatasetCase；导入可在 `DATASET_CASES` 阶段向草稿版本自动生成样本，但不得伪造标准答案、工具轨迹或成功状态。**不再允许游离 Run。**
-2. Git：可推送到独立开发分支（`develop` 或 `feature/task-002-foundation`），不合并 `main`；**需负责人明确授权后才执行**，目前尚未 push，CI 未运行。
+2. Git：可推送到独立开发分支（`develop` 或 `feature/task-002-foundation`），不合并 `main`；**需负责人明确授权后才执行**。
+   > 状态更新（2026-10-18）：已获授权并推送 `origin/develop`，CI 全绿（run `39118089184`，5/5 job），
+   > `main` 未合并，PR #1 待评审。见 `task-002-implementation.md` §3.2 / §3.3。
