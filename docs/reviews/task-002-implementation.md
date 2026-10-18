@@ -36,6 +36,30 @@ V7 处理的具体外键：`evaluation_runs` 的 `active_attempt_id` / `accepted
 `evaluation_batches.parent_batch_id+experiment_id`，`evaluation_jobs.active_attempt_id`。
 **全程没有关闭 `foreign_key_checks`**，也没有用 `repair` 掩盖半完成状态。
 
+### 实际 DDL 导出
+
+`docs/reviews/task-002-actual-ddl.sql`（42 KB，599 行）不是手写文档，而是从真实库导出的对象定义：
+
+```
+空库 repopilot_ddl_probe（utf8mb4 / utf8mb4_0900_ai_ci）
+  → SchemaMigrationIT 触发 Flyway V1..V7
+  → mysqldump --no-data
+  → 剔除 flyway_schema_history 块
+```
+
+导出后再次用 `information_schema` 独立计数复核，与字典完全相等（不含 Flyway 元数据表）：
+
+| 项 | 实际值 |
+| --- | --- |
+| 业务表 | 28 |
+| 主键 | 28 |
+| 唯一键 | 32 |
+| 二级索引 | 46 |
+| 外键 | 47 |
+| CHECK 约束 | 60 |
+| 索引名合计 | 106（28 + 32 + 46，无隐式索引） |
+| `flyway_schema_history` 最高版本 | 7 |
+
 ### 代码
 
 | 类别 | 位置 | 数量 |
@@ -76,7 +100,7 @@ JDK 21.0.10（`~/.jdks/ms-21.0.10`）。没有使用 Docker（本机 `wsl.exe` �
 | --- | --- | --- |
 | `./mvnw -o test` | `repopilot-server/` | 38 通过，0 失败，0 跳过，退出码 0 |
 | `./mvnw -o verify` | `repopilot-server/` | 单测 38 + 集成 38（1 跳过），BUILD SUCCESS |
-| `python tools/verify_design.py` | 仓库根 | PASS，1273 项，28 表 |
+| `python tools/verify_design.py` | 仓库根 | PASS，1278 项，28 表 |
 | `python tools/gen_ddl_from_dict.py --check` | 仓库根 | 6 个迁移与字典一致 |
 | `python tools/gen_java_from_dict.py --check` | 仓库根 | 76 个 Java 文件与字典一致 |
 | `python -m pytest -q` | `repopilot-worker/` | 14 通过 |
@@ -88,6 +112,30 @@ JDK 21.0.10（`~/.jdks/ms-21.0.10`）。没有使用 Docker（本机 `wsl.exe` �
 **唯一跳过项**：`ApiHealthIT.readinessShouldBeUpWhenEveryDependencyIsAvailable`，
 它需要 RabbitMQ，本机没有；该用例由 `REPOPILOT_IT_REQUIRE_ALL_UP=true` 开启，CI 中会执行。
 除它之外没有被 `@Disabled` 或 assumption 静默跳过的测试。
+
+### 3.1 空库复现（第二轮独立验证）
+
+首次验收跑在 `repopilot_it` 上，为了排除"历史残留库恰好通过"，交付前又新建了一个从未被迁移过的空库重跑：
+
+| 命令 | 结果 |
+| --- | --- |
+| `CREATE DATABASE repopilot_ddl_probe`（全新空库） | — |
+| `./mvnw -o failsafe:integration-test -Dit.test=SchemaMigrationIT`（`REPOPILOT_IT_DB_NAME=repopilot_ddl_probe`） | Tests run: 4, Failures: 0, Errors: 0, Skipped: 0 |
+| `information_schema` 独立复核 | 28 表 / 32 唯一键 / 46 二级索引 / 47 外键 / 60 CHECK |
+| `mysqldump --no-data` | 生成 `task-002-actual-ddl.sql` |
+
+结论：迁移链在全新空库上一次性建到 V7，不存在"依赖二次执行才成立"的对象。
+
+### 3.2 提交
+
+| 项 | 值 |
+| --- | --- |
+| 分支 | `develop` |
+| Commit | `5299e46f5372499601dc1227577506a01584769b` |
+| 短哈希 | `5299e46` |
+| 变更规模 | 133 files changed, +9386 / −124 |
+| 工作区 | clean（`git status --short` 无输出） |
+| 远程状态 | **未 Push**（本轮无授权） |
 
 ## 4. 公共组件的复用与改动
 
