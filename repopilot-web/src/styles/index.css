@@ -47,3 +47,85 @@ code {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(122, 134, 154, 0.55);
 }
+
+/* ---------------------------------------------------------------------------
+ * 业务页面共用骨架
+ *
+ * 抽出这几个类是为了让 5 个管理页看起来是同一个系统：页头、工具条、表格卡片。
+ * 页面自己的特殊样式仍然写在各自的 <style scoped> 里。
+ * ------------------------------------------------------------------------- */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.page__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.page__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--rp-text);
+}
+
+.page__subtitle {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--rp-text-muted);
+}
+
+.page__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.page__toolbar-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.page__card {
+  border-radius: 10px;
+}
+
+.page__pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 12px;
+}
+
+.mono {
+  font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  font-size: 12px;
+}
+
+.muted {
+  color: var(--rp-text-muted);
+  font-size: 12px;
+}
+
+.json-block {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  background: #f8fafc;
+  border: 1px solid var(--rp-border);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
