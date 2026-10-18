@@ -18,6 +18,7 @@
 | 创建算子与方案并发布方案版本 | 通过 | `PlanApiIT` 13 条；演示第 8 步 |
 | Vue 页面查看管理 | 通过 | 6 个页面 + 6 张截图（`docs/reviews/task-003-shots/`） |
 | 全量测试 | 通过 | `mvn verify`：单元 **75** / 集成 **88** / **Skipped 0** / BUILD SUCCESS |
+| CI | 通过 | run `39151108726`，5/5 job 绿，两条 MySQL 版本腿均 75/88、0 跳过 |
 | 并发不变量 C1–C4 | 通过 | `ConcurrencyIT` 6 条，连跑 3 轮无偶发失败 |
 
 **按要求未做**：没有真正运行 Agent，没有 Judge 评分（留给 TASK-004/007）。
@@ -60,7 +61,7 @@
 | 4 算子与评测方案 | `a08bf14` | 16 files, +1764/−59 |
 | 5 前端页面 | `101a111` | 16 files, +2527/−9 |
 | 补充：并发验收 + 生成器自检口径 | `9f45b3e` | 3 files |
-| 交付报告与截图 | 见 `git log` 末条 | 文档 |
+| 交付报告与截图 | `2fd9abb`（+ CI 结果补记） | 8 files / 6 张截图 |
 
 分支 `develop`，**未 Force Push、未改写历史、未直接推送 main**。
 
@@ -134,6 +135,22 @@ BASE=http://127.0.0.1:18080/api/v1 bash tools/demo-task-003.sh
 真正挡住重复写入的是 `dataset_cases` 的唯一索引：撞键 → 事务回滚 → 清掉本线程刚写的原文件 →
 `IdempotencyService` 另开事务读回先到者的回执。用例断言"样本 2 条而不是 8 条、批次 1 个、
 原文件 1 份"，就是在验证这条链路完整；任何一环被简化，用例会立刻失败。
+
+### 4.1 CI 实跑
+
+推送 `origin/develop`（`0dd6cfb..2fd9abb`，fast-forward，非 force）后 CI 实际执行：
+
+| 项 | 值 |
+| --- | --- |
+| Run ID | **`39151108726`** — https://github.com/goodddGrades/RepoPilot/actions/runs/39151108726 |
+| 结论 | **success**，5/5 job 通过 |
+| 后端（MySQL **8.0.36**，目标版本） | 单测 **75** / 集成 **88** / **Skipped 0** |
+| 后端（MySQL 8.0 最新） | 单测 **75** / 集成 **88** / **Skipped 0** |
+| 设计字典自检 | ✓ 静态规则、迁移 SQL 一致、**实体与 Mapper 一致**（本轮修正后首次在 CI 通过） |
+| Worker / Web | ✓ / ✓ |
+
+本机与 CI 两端测试数、跳过数完全一致；`ApiHealthIT` 的全依赖 UP 用例在两处都真实执行。
+
 
 ## 5. ArtifactStorage 六条硬性要求
 
