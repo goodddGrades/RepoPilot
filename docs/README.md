@@ -17,6 +17,7 @@
 10. [`reviews/task-002-delta.md`](./reviews/task-002-delta.md) — 相对早期草案的修订（为什么这样做）
 11. [`reviews/repository-alignment.md`](./reviews/repository-alignment.md) — 本仓库核对结果、实际版本与偏差
 12. [`reviews/design-merge-report.md`](./reviews/design-merge-report.md) — 设计包合并时的冲突清单与处置
+13. [`reviews/task-003-contract-revision.md`](./reviews/task-003-contract-revision.md) — **TASK-003 契约修订（2026-10-18 裁决）：JSONL 整批原子、重复 caseKey 报错、`DRAFT→ARCHIVED`（实施前必读）**
 
 ## 全局架构
 

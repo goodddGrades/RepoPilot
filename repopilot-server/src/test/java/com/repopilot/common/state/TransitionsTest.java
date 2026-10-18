@@ -77,6 +77,15 @@ class TransitionsTest {
     }
 
     @Test
+    void draftShouldBeArchivableButArchivedStaysTerminal() {
+        // 2026-10-18 裁决：草稿可以丢弃（归档），归档后不可回到任何可写状态
+        assertThat(Transitions.allows(VersionStatus.DRAFT, VersionStatus.ARCHIVED)).isTrue();
+        assertThat(Transitions.allows(VersionStatus.ARCHIVED, VersionStatus.DRAFT)).isFalse();
+        assertThat(Transitions.allows(VersionStatus.ARCHIVED, VersionStatus.PUBLISHED)).isFalse();
+        assertThat(Transitions.allows(VersionStatus.ARCHIVED, VersionStatus.ARCHIVED)).isFalse();
+    }
+
+    @Test
     void requireShouldThrowConflictWithSpecificErrorCode() {
         assertThatThrownBy(() -> Transitions.require(ExperimentStatus.COMPLETED, ExperimentStatus.RUNNING))
                 .isInstanceOf(BusinessException.class)

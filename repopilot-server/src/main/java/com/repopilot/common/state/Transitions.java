@@ -93,6 +93,8 @@ public final class Transitions {
 
         // 版本发布不可逆：DRAFT→PUBLISHED→ARCHIVED，不支持回到 DRAFT
         allow(VERSION, VersionStatus.DRAFT, VersionStatus.PUBLISHED);
+        // 2026-10-18 裁决：允许丢弃建错的草稿；ARCHIVED 为终态，不可回到 DRAFT/PUBLISHED
+        allow(VERSION, VersionStatus.DRAFT, VersionStatus.ARCHIVED);
         allow(VERSION, VersionStatus.PUBLISHED, VersionStatus.ARCHIVED);
 
         allow(LIFECYCLE, LifecycleStatus.ACTIVE, LifecycleStatus.ARCHIVED);

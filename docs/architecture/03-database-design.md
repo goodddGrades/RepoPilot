@@ -821,6 +821,19 @@ CHECK：无额外CHECK。
 
 Mapper只提供当前任务所需的基础读写，不一次性开放任意状态更新。后续领取和完成必须采用条件更新并检查影响行数，或锁行后变更。Entity不作为API响应。
 
+## 版本归档语义（TASK-003 裁决）
+
+三类配置版本表（`agent_versions` / `dataset_versions` / `evaluation_plan_versions`）的 `status` 均含 `ARCHIVED`。
+2026-10-18 裁决允许 `DRAFT→ARCHIVED`，用于丢弃建错的草稿。归档在数据库层的表达只有 `status` 与 `updated_at`：
+
+- **不新增 `archived_at` / `archive_reason` 列**：V1 以 `updated_at` 记录归档时刻；若后续审计需要独立字段，
+  走 `V8` 迁移（按 `AGENTS.md` §7 流程），**不改 V2–V7**。
+- **"归档后不可修改、不可发布"** 是应用层规则（状态机 + 条件更新），数据库 CHECK 无法表达"状态转换的时间先后"。
+- **"不可被新实验引用"** 需要跨表判断（`experiments.dataset_version_id` → `dataset_versions.status`），
+  MySQL 的 CHECK 不能跨表，因此由创建实验的事务内校验保证，集成用例 I24 覆盖。
+  不要为这条规则加触发器——本项目的约束分工是"跨行规则由 Java 事务校验"。
+- 归档是**逻辑终态**，不物理删除：历史报告、历史实验仍需读到这些版本的元数据与样本。
+
 ## 必须在真实MySQL验证
 
 空库迁移、重复版本/样本/Run槽位/Attempt/eventId/Job最终结果、非法外键、非法score与状态、nullable离线AgentVersion、同Case不同Target/重复编号多个Run、UTC与JSON往返。评测批次另外验证：同批次同 Run 同方案项重复 Job 被拒绝；同 Run 在不同批次可各有一个 Job；Job 引用不属于本批次方案版本的 planItem 被复合外键拒绝；`parent_batch_id` 指向其他实验的批次被复合外键拒绝；跨实验 Run 登记进批次被复合外键拒绝；Job 引用未登记在本批次的 Run 被复合外键拒绝；同批次重复登记同一 Run 被主键拒绝；批次方案版本与选择范围不可更新。索引验收：导出 `information_schema.STATISTICS` 与设计字典逐表比对，确认每条外键都有显式左前缀索引、无多余隐式索引。检查所有复合外键真实生效。服务层测试另外覆盖在线AgentVersion必填、跨实验Case归属和发布不可变；不能把服务规则说成数据库CHECK已完成。

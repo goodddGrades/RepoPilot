@@ -47,6 +47,7 @@ X-Request-Id接受1~64个ASCII字母、数字、下划线或短横线；缺失�
 | GET /dataset-versions/{id} | 固定版本 | DatasetVersion |
 | POST /dataset-versions/{id}/publish 或 /archive | 发布校验非空样本 | DatasetVersion |
 | POST /dataset-versions/{id}/cases | caseKey,taskType,input,expected?,metadata? | DatasetCase |
+| POST /dataset-versions/{id}/cases:import | multipart/form-data，file=*.jsonl；整批原子，见下节 | 导入回执 |
 | GET /dataset-versions/{id}/cases | page,pageSize,keyword? | 页 |
 | PUT /dataset-cases/{id}；DELETE /dataset-cases/{id} | 只允许父版本草稿，DELETE返回{id,deleted:true} | DatasetCase / 删除回执 |
 | POST /evaluation-plans；GET /evaluation-plans；GET /evaluation-plans/{id} | code,name,description | EvaluationPlan或页 |
@@ -56,6 +57,73 @@ X-Request-Id接受1~64个ASCII字母、数字、下划线或短横线；缺失�
 | GET /evaluators；GET /evaluators/{id} | key?,type?,status? | 页 / EvaluatorDefinition |
 
 V1算子定义通过经版本控制的注册清单和种子导入维护，不提供任意上传代码接口。AgentVersion响应含id,agentId,version,runnerType,config,status,publishedAt,createdAt,updatedAt；配置中的secretRef只展示引用，不解析密钥。DatasetCase响应字段与输入相同并补id,datasetVersionId,timestamps。PlanVersion含id,planId,version,status,config,items，Item含id,evaluatorDefinitionId,executionOrder,required,config。
+
+### 批量导入数据集样本
+
+2026-10-18 负责人裁决新增，用于向 `DRAFT` 数据集版本批量导入 JSONL 样本。
+
+```
+POST /api/v1/dataset-versions/{versionId}/cases:import
+Header: Idempotency-Key（必填）
+Body: multipart/form-data；字段 file=<*.jsonl>（filename 仅用于展示与错误提示，不作为身份）
+```
+
+**文件格式**：UTF-8 严格解码（非法字节整批拒绝）；开头 BOM 丢弃；`\r\n` 与 `\n` 都算换行；
+每行一个 JSON 对象，字段与 `POST /dataset-versions/{id}/cases` 完全一致，并额外要求 `schemaVersion=1`；
+结构约束见 [`contracts/dataset-case.schema.json`](../contracts/dataset-case.schema.json)（`additionalProperties=false`，未知字段即错）。
+仅含空白的行跳过但**占用物理行号**——错误行号必须是编辑器里能直接跳过去的行号。
+
+**限制**（超出即 413 `PAYLOAD_TOO_LARGE`，整批拒绝，不写入任何数据）：
+
+| 项 | 上限 |
+| --- | --- |
+| 文件字节 | 20 MiB |
+| 非空行数 | 10000 |
+| 单行字节 | 64 KiB |
+
+**原子语义**：整批要么全部写入，要么一条都不写。校验阶段任何一行失败 → 整批拒绝，
+**不写入任何样本、不创建批次记录、不保存原文件**，响应 400 或 409 并列出错误行。
+不存在"部分成功"，也不允许因为某行内容与已有样本相同就静默复用或覆盖。
+
+**重复 caseKey**：
+
+| 场景 | HTTP | 顶层 `code` | `errors[].field` | `message` 首词 |
+| --- | --- | --- | --- | --- |
+| 文件内重复 | 400 | `VALIDATION_ERROR` | `lines[<行号>].caseKey` | `DUPLICATE_CASE_KEY_IN_FILE` |
+| 与目标版本已有样本重复 | 409 | `RESOURCE_CONFLICT` | `lines[<行号>].caseKey` | `CASE_KEY_CONFLICT` |
+
+两种情况都**不覆盖、不合并、不跳过**。重传同一文件靠 `Idempotency-Key` 拿到原回执，不靠"内容相同就复用"。
+
+**校验顺序**：文件级（大小/编码/行数）→ 行级 schema → 业务规则（`taskType` 注册表、`caseKey` 规则）→ 文件内重复 → 与库内冲突。
+一次收集**全部**错误行（最多 100 条，超出时 `message` 注明"共 N 条，仅显示前 100 条"）。信封已冻结，不新增 `errorsTruncated` 字段。
+
+**错误响应示例**（`errors` 是字段级列表，行号在 field 中）：
+
+```json
+{"code":"VALIDATION_ERROR","message":"第 3、7 行不合法","data":null,
+ "errors":[{"field":"lines[3].caseKey","message":"DUPLICATE_CASE_KEY_IN_FILE 与第 1 行重复"},
+           {"field":"lines[7].taskType","message":"UNKNOWN_TASK_TYPE 不在注册表内"}],
+ "requestId":"01J...","timestamp":"2026-10-18T15:00:00.000Z"}
+```
+
+**成功响应 201**：
+
+```json
+{"code":"OK","message":"success","data":{
+  "importBatchId":"01J...","versionId":"01J...","status":"COMPLETED",
+  "importedCount":320,"totalCount":320,"sizeBytes":183421,"sha256":"<64 hex>"},
+ "errors":[],"requestId":"01J...","timestamp":"2026-10-18T15:00:00.000Z"}
+```
+
+**幂等**：`Idempotency-Key` 必填，摘要包含文件 `sha256`。同 key 同文件重放返回原回执与 201；同 key 不同文件 → 409 `IDEMPOTENCY_CONFLICT`；失败请求不写回执。
+
+**与单条创建的一致性（硬性要求）**：同一组样本，逐条 `POST /cases` 与一次 JSONL 导入，写入的 `dataset_cases` 行必须逐字段相同；
+发布后两者的 `content_hash` 必须完全相同。规范化与摘要只有一份实现，两条路径共用，不允许各写一套。
+
+**原文件与批次记账**：导入成功时原始字节存为 `artifacts`（`artifact_type=IMPORT_FILE`、`run_id=NULL`、`status=READY`），
+并写 `import_batches`（`import_type=DATASET_CASES`、`total_count=success_count=importedCount`、`failed_count=0`、`status=COMPLETED`）。
+存储通过 `ArtifactStorage` 接口抽象，V1 提供本地文件系统实现（MinIO 接入不改调用方）。
+V1 **不写** `import_records`：整批原子 + 幂等键已保证不重复计数；行级回执留给 TASK-005 的 `OFFLINE_RUNS`。
 
 ## 实验与运行（TASK-004/005；评测批次接口 TASK-007）
 

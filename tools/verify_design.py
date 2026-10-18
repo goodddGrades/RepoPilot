@@ -179,6 +179,20 @@ def main():
     check('LATEST' in api and '最新创建' in api, 'LATEST means newest created batch')
     check('不得静默回退' in api, 'LATEST must not fall back silently')
     check('LATEST_COMPLETED' in api, 'latest completed scope must stay separate')
+    # 2026-10-18 裁决：批量导入必须是整批原子，且重复 caseKey 必须报错而不是静默复用
+    check('cases:import' in api, 'dataset cases import endpoint missing')
+    check('整批要么全部写入，要么一条都不写' in api, 'import must be all-or-nothing')
+    check('CASE_KEY_CONFLICT' in api and 'DUPLICATE_CASE_KEY_IN_FILE' in api,
+          'import duplicate caseKey must be an explicit error')
+    check('不存在"部分成功"' in api, 'partial success must be explicitly excluded')
+    # 归档边必须在状态机文档与实现里同时存在，否则"文档能归档、代码不能"会长期漂移
+    rel=(ROOT/'docs/architecture/06-reliability-design.md').read_text()
+    check('DRAFT→ARCHIVED' in rel, 'version DRAFT->ARCHIVED transition missing in state machine doc')
+    transitions=(ROOT/'repopilot-server/src/main/java/com/repopilot/common/state/Transitions.java').read_text()
+    check('VersionStatus.DRAFT, VersionStatus.ARCHIVED' in transitions,
+          'Transitions must allow DRAFT->ARCHIVED')
+    task3=(ROOT/'tasks/TASK-003.md').read_text()
+    check('整批原子' in task3, 'TASK-003 must state atomic import semantics')
 
     print(json.dumps({'status':'PASS','checks':checks,'tables':len(tables),'json_schemas':len(validators),'positive_samples':len(samples),'negative_samples':len(negative),'scope':'设计文件静态检查；不代表MySQL迁移或应用验收'},ensure_ascii=False,indent=2))
 
