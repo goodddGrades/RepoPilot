@@ -33,24 +33,24 @@
 - 不做 MinIO 之外的对象存储，不做文件预览与下载签名。
 - 不引入 Spring Security 之外的认证体系（V1 无登录，`created_by` 先写固定系统标识）。
 
-### 0.3 与冻结契约的差异（需负责人确认，其余不要自作主张改）
+### 0.3 负责人裁决（2026-10-18，已批准，按此实施）
 
-**差异 1：新增一个导入接口。** `04-api-contract.md` 的 TASK-003 接口表里没有 JSONL 导入，
-导入预留在「文件、导入与轨迹（TASK-005/006）」。但负责人明确要求 TASK-003 支持 JSONL 导入
-数据集样本，且 `import_batches.import_type` 已有 `DATASET_CASES` 枚举值、
-`artifacts.artifact_type` 已有 `IMPORT_FILE` 且 `run_id` 可空（备注"导入原文件可为空"），
-说明数据模型本来就为这件事留了位置。因此新增：
+TASK-002 正式验收通过；以下六项已获批准，**不需要再确认**：
 
-```
-POST /api/v1/dataset-versions/{id}/cases:import    multipart/form-data，需 Idempotency-Key
-```
+1. **新增 `POST /api/v1/dataset-versions/{versionId}/cases:import`**，用于向草稿版本批量导入 JSONL 样本。
+   已同步写入 `04-api-contract.md` §批量导入数据集样本（限制、校验顺序、错误行响应、幂等边界都在那里）。
+2. **批量导入整批原子**：任一错误行则整批不写入——不写样本、不建批次、不存原文件。
+3. **重复 `caseKey` 明确报错**：文件内重复 400、与库内已有样本冲突 409；不覆盖、不合并、不跳过。
+4. **版本状态机增加 `DRAFT → ARCHIVED`**：丢弃建错的草稿；归档后不可修改、不可发布、
+   不可被新实验引用，历史记录保留。
+5. **保留四个子模块**：Agent 管理、数据集管理、版本控制、评测算子与方案配置管理。
+6. **明确不做**：Runner、Judge 执行、在线/离线评测调度、RabbitMQ 业务消费、Outbox 发布器。
 
-实现时必须同步把该行加入 `04-api-contract.md` §版本管理接口，不要让文档落后于代码。
+契约修订记录见 [`docs/reviews/task-003-contract-revision.md`](../docs/reviews/task-003-contract-revision.md)。
+**已冻结的 TASK-002 历史文档不改写**；本次只更新当前有效契约（`04-api-contract.md`、`06-reliability-design.md`、
+`03-database-design.md` 的说明段）与本手册。
 
-**差异 2：草稿不能归档。** `Transitions.VERSION` 只允许 `DRAFT→PUBLISHED`、`PUBLISHED→ARCHIVED`。
-即"建错了的草稿"无法通过归档丢弃。V1 建议**保持现状**（草稿不参与任何引用，留着无害），
-不要为了"顺手"给状态机加 `DRAFT→ARCHIVED`——那属于改契约。若负责人要求支持丢弃草稿，
-单独提一次契约变更，改 `Transitions` 与本文档，不在本任务里悄悄做。
+`config_hash` / `content_hash` 的规范化算法**保持不变**——§3.4 是现状描述，不是待议项，实现时照抄，不要"顺手优化"。
 
 ### 0.4 开工前必读
 
@@ -146,12 +146,12 @@ POST /api/v1/dataset-versions/{id}/cases:import    multipart/form-data，需 Ide
 | `GET /datasets/{id}/versions` | `page,pageSize` | 200 页 | `version DESC` |
 | `GET /dataset-versions/{id}` | — | 200 DatasetVersion | 含 `caseCount`（现算，不落库） |
 | `POST /dataset-versions/{id}/publish` | 空体 | 200 DatasetVersion | 只允许 `DRAFT`；样本数必须 > 0，否则 400 `VALIDATION_ERROR`(field=`cases`)；发布时写 `content_hash` 与 `published_at` |
-| `POST /dataset-versions/{id}/archive` | 空体 | 200 DatasetVersion | 只允许 `PUBLISHED` |
+| `POST /dataset-versions/{id}/archive` | 空体 | 200 DatasetVersion | 允许 `DRAFT`（丢弃草稿）与 `PUBLISHED`；`ARCHIVED` 为终态 |
 | `POST /dataset-versions/{id}/cases` | `{caseKey,taskType,input,expected?,metadata?}` | 201 DatasetCase | 父版本 `DRAFT`；`caseKey` 1~128 版本内唯一；`taskType` 走注册表；`input` 必须是对象 |
 | `GET /dataset-versions/{id}/cases` | `page,pageSize,keyword?` | 200 页 | `keyword` 匹配 `caseKey`；默认 `caseKey ASC` |
 | `PUT /dataset-cases/{id}` | 同创建（`caseKey` 可改） | 200 DatasetCase | 父版本 `DRAFT`；改 `caseKey` 撞已存在 → 409 |
 | `DELETE /dataset-cases/{id}` | — | 200 `{id,deleted:true}` | 父版本 `DRAFT` |
-| `POST /dataset-versions/{id}/cases:import` | `multipart/form-data`：`file` | 200 导入回执 | 见 §2.5 |
+| `POST /dataset-versions/{id}/cases:import` | `multipart/form-data`：`file` | 201 导入回执 | 整批原子；见 §2.5 |
 
 `DatasetVersion` 响应：`id,datasetId,version,status,description,contentHash,publishedAt,caseCount,createdAt,updatedAt`。
 `DatasetCase` 响应：`id,datasetVersionId,caseKey,taskType,input,expected,metadata,createdAt,updatedAt`。
@@ -174,7 +174,7 @@ POST /api/v1/dataset-versions/{id}/cases:import    multipart/form-data，需 Ide
 种子文件放 `repopilot-server/src/main/resources/seed/evaluators.json`，
 启动时按 `(evaluator_key, version)` 幂等 upsert（已存在则跳过，不改内容）。
 
-### 2.5 新增接口：JSONL 导入（差异 1）
+### 2.5 JSONL 批量导入（已批准新增接口）
 
 ```
 POST /api/v1/dataset-versions/{id}/cases:import
@@ -182,55 +182,57 @@ Header: Idempotency-Key（必填）
 Body: multipart/form-data；file=<*.jsonl>
 ```
 
-响应 `data`：
+限制：文件 **20 MiB**、非空行 **10000**、单行 **64 KiB**；超出 → 413，且**不写入任何数据**。
 
-```json
-{
-  "importBatchId": "01J...",
-  "status": "COMPLETED | PARTIAL_FAILED",
-  "totalCount": 320,
-  "successCount": 318,
-  "failedCount": 2,
-  "duplicateCount": 5,
-  "errorsTruncated": false,
-  "errors": [
-    {"lineNo": 7, "errorCode": "UNKNOWN_TASK_TYPE", "message": "taskType 不在注册表内"},
-    {"lineNo": 9, "errorCode": "DUPLICATE_CASE_KEY_IN_FILE", "message": "caseKey 与第 3 行重复"}
-  ]
-}
-```
+**整批原子**（把"不存在什么"也写清楚，避免实现走偏）：
 
-规则：
+| 情形 | 结果 |
+| --- | --- |
+| 全部行合法 | 单事务：存原文件 → 插 `artifacts` → 插 `import_batches` → 批量插 `dataset_cases` → 提交，201 |
+| 任意一行失败 | 整批拒绝：不写样本、不建批次、不存原文件，400/409 + 错误行列表 |
 
-1. **同步处理**（≤10000 非空行，V1 不排队、不返回 202）。
-2. 文件上限 20MiB、非空行上限 10000、单行上限 64KiB，超出 → 413 `PAYLOAD_TOO_LARGE`。
-3. UTF-8 严格解码；开头 BOM 丢弃；`\r\n` 与 `\n` 都算换行；仅含空白的行跳过，
-   但**占用物理行号**（报错行号必须是用户能用编辑器跳过去的那个行号）。
-4. 每行必须是 `dataset-case.schema.json` 的合法对象（`additionalProperties=false`，
-   未知字段直接算错）。`schemaVersion` 必须为 `1`。
-5. 同一文件内 `caseKey` 重复：**第一条入库**，后续行 `REJECTED` +
-   `DUPLICATE_CASE_KEY_IN_FILE`。不要静默去重——用户会以为数据都在。
-6. 目标版本已存在同 `caseKey`：
-   - 行内容 `record_hash` 相同 → `REUSED`，`duplicateCount++`（重放同一文件不重复入库）
-   - 内容不同 → `REJECTED` + `CASE_KEY_CONFLICT`
-7. 目标版本必须是 `DRAFT`，否则 409 `INVALID_STATE_TRANSITION`。
-8. 有任何失败行 → 批次 `PARTIAL_FAILED`，**成功行照常提交**；全部成功 → `COMPLETED`。
-9. 文件级前置失败（解码失败、超限、不是合法 JSONL 容器）→ 400，且**不创建批次**。
-10. `errors` 最多返回 50 条，超出时 `errorsTruncated=true`；完整错误列表由
-    `GET /dataset-versions/{id}/cases:import` 的后续任务读取 `import_errors`（本任务不实现该查询接口）。
+不允许"成功行先提交"，也不允许"失败行记 `import_errors` 后继续"。**不存在部分成功。**
 
-行级错误码（写入 `import_errors.error_code`，VARCHAR(64)）：
+**校验顺序**（一次收集全部错误，最多返回 100 条）：
+
+1. 文件级：字节数、UTF-8 严格解码、非空行数；
+2. 行级 schema：`dataset-case.schema.json`（`additionalProperties=false`），`schemaVersion` 必须为 `1`；
+3. 业务：`taskType` 在注册表、`caseKey` 1~128 且字符合规、`input` 必须是对象；
+4. 文件内 `caseKey` 重复；
+5. 与目标版本已有 `caseKey` 冲突。
+
+**重复 caseKey 一律报错**：
+
+| 场景 | HTTP | `errors[].field` | 错误码（写在 `message` 首词） |
+| --- | --- | --- | --- |
+| 文件内重复 | 400 | `lines[n].caseKey` | `DUPLICATE_CASE_KEY_IN_FILE` |
+| 与库内冲突 | 409 | `lines[n].caseKey` | `CASE_KEY_CONFLICT` |
+
+**不要**实现"内容相同就 `REUSED`"的静默复用——旧方案已被裁决替换；重传靠 `Idempotency-Key` 拿回执。
+
+行级错误码（枚举，用于 `message` 首词与日志；V1 不落 `import_errors`）：
 
 | 错误码 | 含义 |
 | --- | --- |
 | `INVALID_JSON` | 该行不是合法 JSON |
-| `SCHEMA_VIOLATION` | 缺必填字段 / 类型不符 / 有未知字段 |
+| `SCHEMA_VIOLATION` | 缺必填 / 类型不符 / 未知字段 |
 | `UNSUPPORTED_SCHEMA_VERSION` | `schemaVersion ≠ 1` |
 | `UNKNOWN_TASK_TYPE` | `taskType` 不在注册表 |
 | `INVALID_CASE_KEY` | 长度或字符不合规 |
 | `DUPLICATE_CASE_KEY_IN_FILE` | 文件内重复 |
-| `CASE_KEY_CONFLICT` | 与版本内已有样本内容冲突 |
-| `LINE_TOO_LONG` | 单行超 64KiB |
+| `CASE_KEY_CONFLICT` | 与版本内已有样本冲突 |
+| `LINE_TOO_LONG` | 单行超 64 KiB（文件级可提前判 413） |
+
+成功响应 `data`：
+
+```json
+{"importBatchId":"01J...","versionId":"01J...","status":"COMPLETED",
+ "importedCount":320,"totalCount":320,"sizeBytes":183421,"sha256":"<64 hex>"}
+```
+
+**两条路径必须同 hash**：同一组样本，逐条 `POST /cases` 与一次导入，写入行逐字段相同；发布后
+`content_hash` 必须完全相同。归一化与摘要只允许一份实现（`DatasetContentHasher`），两条路径共用。
+集成用例 I18 拿这个当断言。
 
 ### 2.6 注册表（本任务新增的唯一"字典"）
 
@@ -331,24 +333,31 @@ payload = 规范化( {config, items: [ {evaluatorDefinitionId, executionOrder, r
 - 同 key 异摘要 → 409 `IDEMPOTENCY_CONFLICT`，不执行业务。
 - 并发同 key：唯一键冲突后读取已提交回执并返回，不要返回 500。
 
-### 3.6 导入的写入顺序与计数
+### 3.6 导入的写入顺序（整批原子，单事务）
 
 ```
-1) 校验文件级限制（大小/行数/编码）   → 失败：400，不建批次
-2) 上传字节到对象存储，得 sha256      → 失败：503 SERVICE_UNAVAILABLE
-3) INSERT artifacts (IMPORT_FILE, run_id=NULL, status=READY)
-4) INSERT import_batches (DATASET_CASES, dataset_version_id, file_artifact_id, status=RUNNING)
-5) 逐行：解析 → 校验 → INSERT dataset_cases
-                     INSERT import_records (line_no, record_hash, status, dataset_case_id)
-         失败行：INSERT import_errors (line_no, error_code, error_message, record_hash)
-6) UPDATE import_batches SET total_count, success_count, failed_count, duplicate_count,
-                            last_line_no = 最大物理行号, status, finished_at
+1) 文件级校验：字节 ≤20MiB、UTF-8 严格解码、非空行 ≤10000
+2) 逐行解析 + 校验 + 收集错误（不写库，最多收集 100 条展示用）
+   → 有任何错误：抛 ImportValidationException(errors)，事务回滚，库内零写入
+3) 文件内 caseKey 重复检查；与库内冲突检查（SELECT ... WHERE dataset_version_id=? AND case_key IN (...)）
+4) 锁版本行并确认 DRAFT：SELECT ... FOR UPDATE
+5) 存原文件：ArtifactStorage.put → 得到 sha256/sizeBytes；INSERT artifacts(IMPORT_FILE, run_id=NULL, READY)
+6) INSERT import_batches(DATASET_CASES, dataset_version_id, file_artifact_id, status=COMPLETED,
+                         total_count=success_count=n, failed_count=0, duplicate_count=0,
+                         last_line_no=最大物理行号, started_at, finished_at)
+7) 批量 INSERT dataset_cases（JDBC batch，rewriteBatchedStatements=true）
+8) UPDATE dataset_versions SET updated_at=? （不写 content_hash——草稿没有摘要）
+提交
 ```
 
-- `import_records` 每行一条（含 `REJECTED`），保证重放不重复计数。
-- `duplicate_count ≤ success_count` 由数据库 CHECK 保证，代码里不要写反。
-- `record_hash = sha256(原始行字节)`，`import_errors.error_message` ≤1024 且**不含原始行内容**，
-  只写字段级原因（不把用户数据写进错误表）。
+要点：
+
+- **校验全部在写库之前完成**：先收集、再落库。"整批原子"不靠回滚掩盖半成品，而是本来就没写过。
+- 第 5 步存储不可用 → 503 `SERVICE_UNAVAILABLE`，事务回滚，同样零写入。
+- 第 7 步撞唯一键 `(dataset_version_id, case_key)`（并发下被别人抢先写入）→ 409 `RESOURCE_CONFLICT`，
+  整批回滚；**不要让 `DuplicateKeyException` 冒到 500**。
+- `import_records` V1 不写：整批原子 + 幂等键已保证不重复计数，行级回执留给 TASK-005 的 `OFFLINE_RUNS`。
+- `failed_count=0`、`duplicate_count=0` 是"整批原子"的必然结果，不要为它们编造统计逻辑。
 
 ### 3.7 本任务不需要新迁移
 
@@ -379,7 +388,11 @@ payload = 规范化( {config, items: [ {evaluatorDefinitionId, executionOrder, r
 | 从 | 到 | 触发 |
 | --- | --- | --- |
 | `DRAFT` | `PUBLISHED` | `POST .../publish` |
+| `DRAFT` | `ARCHIVED` | `POST .../archive`（丢弃建错的草稿） |
 | `PUBLISHED` | `ARCHIVED` | `POST .../archive` |
+
+`ARCHIVED` 是终态：不可修改、不可发布、不可被新实验引用（新建 Experiment 时校验
+`dataset_version.status=PUBLISHED`，引用校验放在提交事务内），历史记录保留。
 
 **EvaluatorDefinition.status**：只读，由种子导入决定（`PUBLISHED`）。不提供转换接口。
 
@@ -439,10 +452,17 @@ Transitions.require(current, VersionStatus.PUBLISHED);   // 非法则抛 INVALID
   不要直接把后端 message 弹给用户。
 - 加载：列表用骨架屏；详情用区块级 loading；按钮提交期间禁用并显示进行中。
 
-### 5.4 不可变提示
+### 5.4 不可变提示与归档
 
 发布后详情页出现 `ImmutableBanner`：说明"内容已冻结，如需修改请复制为新版本"，
 并把编辑表单整块置灰（不是只禁用保存按钮——用户会以为还能填）。
+
+归档规则（`DRAFT` 与 `PUBLISHED` 都可归档）：
+
+- 草稿的归档按钮文案是"丢弃草稿"（二次确认写清"样本与配置将不可再用，但记录保留"），
+  不是"归档"——用户不会把"丢弃"理解成"存档"。
+- 归档后详情页显示"已归档"横幅；编辑、发布、导入三个入口全部不渲染（不是置灰）。
+- 列表默认隐藏 `ARCHIVED`，筛选器可显式查看。
 
 ---
 
@@ -491,6 +511,7 @@ Transitions.require(current, VersionStatus.PUBLISHED);   // 非法则抛 INVALID
 | `DatasetCaseValidatorTest` | 缺 `input`、`schemaVersion=2`、未知字段、`caseKey` 超长逐一报对应码 |
 | `VersionNumberingTest` | 空历史 → 1；有 3 条 → 4（用 mock Mapper） |
 | `TransitionsRequireLifecycleTest` | `ARCHIVED→ACTIVE` 被拒 |
+| `TransitionsVersionArchiveTest` | `DRAFT→ARCHIVED` 允许；`PUBLISHED→ARCHIVED` 允许；`ARCHIVED→PUBLISHED` / `ARCHIVED→DRAFT` 被拒 |
 | `IdempotencyDigestTest` | 键序不同但语义相同 → 同摘要；body 改动 → 摘要变 |
 
 ### 7.2 集成测试（真实 MySQL，`*IT`，由 Failsafe 执行）
@@ -514,12 +535,17 @@ Transitions.require(current, VersionStatus.PUBLISHED);   // 非法则抛 INVALID
 | I12 | `executionOrder` = [1,3] | 400，拒绝不连续 |
 | I13 | 幂等：同 key 同 body 两次 | 第二次返回同一 `id`，库里 1 行 |
 | I14 | 幂等：同 key 异 body | 409 `IDEMPOTENCY_CONFLICT` |
-| I15 | 导入 3 行合法 + 1 行非法 | 批次 `PARTIAL_FAILED`，`successCount=3`、`failedCount=1`，错误行号正确 |
-| I16 | 导入文件内重复 `caseKey` | 第一条 `IMPORTED`，第二条 `REJECTED` + `DUPLICATE_CASE_KEY_IN_FILE` |
-| I17 | 同一文件导入两次 | 第二次全部 `REUSED`，`duplicateCount=行数`，样本总数不变 |
+| I15 | 导入 3 行合法 + 1 行非法 | **整批拒绝**：`dataset_cases` 零新增、`import_batches` 零新增、`artifacts` 零新增；400/409 且错误行号正确 |
+| I16 | 文件内重复 `caseKey` | 400 `VALIDATION_ERROR`，`field=lines[n].caseKey`，message 首词 `DUPLICATE_CASE_KEY_IN_FILE`；零写入 |
+| I17 | 文件的 `caseKey` 与库内已有样本冲突 | 409 `RESOURCE_CONFLICT`，`CASE_KEY_CONFLICT`；零写入，原样本内容未被覆盖 |
 | I18 | 导入后 `content_hash` | 与"逐条 POST 同样样本再发布"得到的 hash 相等（两条入口必须一致） |
-| I19 | 导入到已发布版本 | 409，不建批次 |
-| I20 | `import_errors.error_message` | 不含原始行内容（脱敏断言） |
+| I19 | 导入到已发布 / 已归档版本 | 409 `INVALID_STATE_TRANSITION`，零写入 |
+| I20 | 超过 10000 非空行 / 文件 >20MiB / 单行 >64KiB | 413 `PAYLOAD_TOO_LARGE`，零写入 |
+| I21 | CRLF、BOM、中间空行 | 导入成功；行数只计非空行；错误行号按**物理行**（含空行占号） |
+| I22 | 同 `Idempotency-Key` 重放同一文件 | 201 且 `importBatchId` 相同；样本数不增；`import_batches` 仍 1 条 |
+| I23 | 草稿归档 `DRAFT→ARCHIVED` | 200；再 `PUT` / `publish` / `import` 全部 409 |
+| I24 | 归档版本被新实验引用 | 拒绝（400/409），不产生 Experiment 行 |
+| I25 | 归档后读取 | 详情与样本列表仍可读（历史保留，不物理删除） |
 
 ### 7.3 并发测试（必须真跑，不靠"看起来没问题"）
 
@@ -528,7 +554,7 @@ Transitions.require(current, VersionStatus.PUBLISHED);   // 非法则抛 INVALID
 | C1 | 10 线程同时建版本 | `CountDownLatch` 同时放行 | 版本号为 1..10 连续，无重复；无 500 |
 | C2 | 一边 `PUT` 草稿、一边 `publish` | 两线程交错，重复 20 轮 | 要么 `PUT` 成功且 `publish` 拿到最终配置，要么 `PUT` 409；**不允许**发布后仍能改 |
 | C3 | 同幂等 key 并发 5 次 | 5 线程同 key 同 body | 只产生 1 个资源，5 个响应体一致 |
-| C4 | 导入同一文件并发 2 次 | 两线程 | 样本数不翻倍；`duplicate_count` 计入复用 |
+| C4 | 导入同一文件并发 2 次（不同幂等键） | 两线程同时提交 | 一方 201，另一方 409 `RESOURCE_CONFLICT`；样本数 = n，**不翻倍不重复**；无 500 |
 
 > 并发测试用明确同步点（latch / barrier），**不要用 `Thread.sleep` 制造时序**。
 
@@ -538,7 +564,7 @@ Transitions.require(current, VersionStatus.PUBLISHED);   // 非法则抛 INVALID
 - 手工联调清单（写进交付报告，逐条勾）：
   1. 新建 Agent → 加版本 → 改草稿 → 发布 → 详情页出现只读条
   2. 发布后编辑入口不可用（置灰 + 文案正确）
-  3. 数据集导入 5 行文件（含 1 行坏行）→ 结果摘要与错误行号正确
+  3. 数据集导入 5 行文件（含 1 行坏行）→ **整批被拒**、错误行号准确定位、样本数仍为 0
   4. 数据集发布后再点导入 → 明确的"已发布不能导入"提示
   5. 方案编排：算子顺序调整 → 保存 → 重新打开顺序一致
   6. 断网/后端 500 → 页面显示错误态与"重试"，不是白屏
@@ -558,10 +584,12 @@ CI 会在 MySQL `8.0.36` 与 `8.0` 两个版本上各跑一遍，两边都要绿
 - [ ] 12 张表零新增迁移；`migrations.lock.json` 未变更；`gen_ddl_from_dict.py --check` 通过
 - [ ] 四个子模块的全部接口按 §2 实现，路径/状态码/错误码与契约一致
 - [ ] 版本不可变：已发布版本的配置、样本、方案项三条写路径全部 409（I3/I7 通过）
+- [ ] 归档语义：`DRAFT→ARCHIVED`、`PUBLISHED→ARCHIVED` 均可；归档后修改/发布/导入/被新实验引用全部被拒，历史仍可读（I23/I24/I25）
 - [ ] 并发：C1/C2/C3/C4 全绿，且**没有**用 sleep 制造时序
 - [ ] 版本号连续无空洞（含并发场景）
 - [ ] `content_hash` / `config_hash` 有快照测试，两次发布同一内容 hash 相同
-- [ ] JSONL 导入：错误行号可用、部分失败照常提交、重放不重复入库（I15–I20）
+- [ ] JSONL 导入：**整批原子**（任一行错 → 零写入）、错误行号可定位、重复 `caseKey` 明确报错、超限 413、幂等重放不重复入库（I15–I22）
+- [ ] 单条创建与批量导入得到相同 `content_hash`（I18）
 - [ ] 幂等：同 key 同 body 复用、异 body 409（I13/I14）
 - [ ] 未知 `agentType` / `taskType` 被拒绝（服务层注册表，库无 CHECK）
 - [ ] 前端 6 个页面可操作，`npm run build` 通过，联调清单 6 条全勾
@@ -576,17 +604,17 @@ CI 会在 MySQL `8.0.36` 与 `8.0` 两个版本上各跑一遍，两边都要绿
 
 | 类别 | 内容 |
 | --- | --- |
-| 代码 | `modules/agent`、`modules/dataset`、`modules/evaluationconfig`（补 controller/service）、`common/api`（分页复用）、`common/storage`（MinIO 端口）、`common/state`（补 `require(LifecycleStatus)`） |
+| 代码 | `modules/agent`、`modules/dataset`、`modules/evaluationconfig`（补 controller/service）、`common/api`（分页复用）、`common/storage`（`ArtifactStorage` 抽象 + 本地文件系统实现）、`common/state`（补 `require(LifecycleStatus)` 与 `DRAFT→ARCHIVED`） |
 | 种子 | `resources/seed/evaluators.json` + 启动导入器（幂等） |
 | 前端 | 6 个视图、6 个组件、4 个 api 模块、3 个 store、类型定义 |
-| 测试 | 单元 9 组、集成 I1–I20、并发 C1–C4 |
-| 文档 | `04-api-contract.md` 补接口；`frontend-design.md` 补页面；本手册末尾追加"实施记录" |
+| 测试 | 单元 9 组、集成 I1–I25、并发 C1–C4 |
+| 文档 | `04-api-contract.md` 已补 `cases:import`；`06-reliability-design.md` 已补归档边；`frontend-design.md` 补页面；本手册末尾追加"实施记录" |
 
 报告模板沿用 `tasks/README.md`，并额外回答三个问题：
 
 1. 版本不可变是怎么保证的？（指到具体行锁与状态校验代码）
 2. 并发版本号分配的临界区在哪一行？
-3. 如果现在要加"DRAFT→ARCHIVED"，需要改哪几个地方？（验证是否真的理解契约边界）
+3. 归档规则落在哪几处？（`Transitions` 边、Service 校验、引用校验、前端置灰——四处都要指出来）
 
 ---
 

@@ -26,9 +26,9 @@
 - RunAttempt/JobAttempt：创建时 RUNNING；之后只到 COMPLETED/FAILED/TIMED_OUT/CANCELLED。
 - Job：PENDING→RUNNING→COMPLETED/FAILED；PENDING→SKIPPED。重试时 Job 保持 RUNNING，增加新的 Attempt；取消时待执行 Job 置 SKIPPED、运行中 Job 置 FAILED(error_code=CANCELLED)，Run 自身置 CANCELLED。
 - EvaluationBatch：PENDING→RUNNING→COMPLETED/PARTIAL_FAILED/FAILED（无任何成功 Job 才 FAILED）；PENDING/RUNNING→CANCELLED。批次创建事务同时写入批次行、`evaluation_batch_runs` 的 Run 登记行与 `expected_job_count`，提交后三者均不可修改：不能追加 Run、不能改方案版本、不能改选择依据。
-- ImportBatch：PENDING→RUNNING→COMPLETED/PARTIAL_FAILED/FAILED；PENDING/RUNNING→CANCELLED。
+- ImportBatch：PENDING→RUNNING→COMPLETED/PARTIAL_FAILED/FAILED；PENDING/RUNNING→CANCELLED。`DATASET_CASES` 导入按 2026-10-18 裁决为**整批原子**：任一错误行则整批不写入、不落批次，只可能产生 `COMPLETED` 或 `FAILED`；`PARTIAL_FAILED` 仅保留给后续 `OFFLINE_RUNS` 场景。
 - Annotation：PENDING→CLAIMED→SUBMITTED→REVIEWED；SUBMITTED→RETURNED→CLAIMED；任意未审核状态→CANCELLED。
-- Version：DRAFT→PUBLISHED→ARCHIVED；不支持回到 DRAFT。Agent/Dataset 可 ACTIVE→ARCHIVED，不物理删除历史。
+- Version：DRAFT→PUBLISHED；DRAFT→ARCHIVED（丢弃建错的草稿，2026-10-18 裁决）；PUBLISHED→ARCHIVED；不支持回到 DRAFT。ARCHIVED 是终态：不可修改、不可发布、不可被新实验引用，历史记录保留（归档时刻以 `updated_at` 记录，V1 不新增专列）。Agent/Dataset 可 ACTIVE→ARCHIVED，不物理删除历史。
 
 同状态心跳是更新时间，不算状态转换。非法转换返回 INVALID_STATE_TRANSITION/409。Java 实现可测试的转换表和原子数据库条件更新，不能只在 Controller 中判断。
 
