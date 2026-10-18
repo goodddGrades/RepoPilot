@@ -45,6 +45,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | [`contracts/database-schema.json`](./contracts/database-schema.json) | 数据库字段/索引/外键/CHECK 的**唯一来源**，先改此文件再生成迁移与文档 |
+| [`contracts/migrations.lock.json`](./contracts/migrations.lock.json) | 已发布迁移的 sha256 冻结记录：冻结后只新增迁移，不改历史 |
 | [`contracts/openapi-common.yaml`](./contracts/openapi-common.yaml) | 公共响应、错误、分页、ULID 组件（只含公共部分） |
 | [`contracts/event-envelope.schema.json`](./contracts/event-envelope.schema.json) | 事件信封 |
 | [`contracts/trace-event.schema.json`](./contracts/trace-event.schema.json) | 轨迹事件 |

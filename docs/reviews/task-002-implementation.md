@@ -147,19 +147,22 @@ JDK 21.0.10（`~/.jdks/ms-21.0.10`）。没有使用 Docker（本机 `wsl.exe` �
 | 项 | 值 |
 | --- | --- |
 | Workflow | `ci` |
-| Run ID（push） | **`39116300359`** — https://github.com/goodddGrades/RepoPilot/actions/runs/39116300359 |
-| Run ID（push，文档提交） | `39116550932` — success |
-| Run ID（pull_request） | `39116578031` — success |
+| Run ID（首轮 push） | **`39116300359`** — https://github.com/goodddGrades/RepoPilot/actions/runs/39116300359 |
+| Run ID（双版本矩阵，最终） | **`39118089184`** — 5/5 job 通过 |
 | PR | **#1** `develop → main` — https://github.com/goodddGrades/RepoPilot/pull/1（`MERGEABLE`，未合并） |
 | 触发 | push → `develop` 与 `pull_request` |
-| 结论 | **success，4/4 job 通过** |
+| 结论 | **success** |
+
+首轮为 4 个 job；随后按评审意见把后端 job 改为 **MySQL 版本矩阵**（`8.0.36` 目标版本 + `8.0` 向前兼容），
+变成 5 个 job：
 
 | Job | 耗时 | 结果 |
 | --- | --- | --- |
-| 设计字典自检 | 8s | ✓ 静态规则 + DDL `--check` + Java `--check` |
-| 后端（MySQL 8 + RabbitMQ） | 1m13s | ✓ 单测 38 / 集成 38，**Skipped: 0** |
-| Worker（pytest） | 13s | ✓ |
-| Web（构建） | 24s | ✓ |
+| 设计字典自检 | 11s | ✓ 静态规则 + DDL `--check`（含冻结校验）+ Java `--check` |
+| 后端（MySQL **8.0.36** + RabbitMQ） | 1m01s | ✓ 单测 38 / 集成 38，**Skipped: 0** |
+| 后端（MySQL 8.0 最新 + RabbitMQ） | 1m06s | ✓ 单测 38 / 集成 38，**Skipped: 0** |
+| Worker（pytest） | 12s | ✓ |
+| Web（构建） | 23s | ✓ |
 
 关键差异——**CI 上 Skipped 为 0**：
 
@@ -171,6 +174,15 @@ JDK 21.0.10（`~/.jdks/ms-21.0.10`）。没有使用 Docker（本机 `wsl.exe` �
 
 本地因无 RabbitMQ 而跳过的那条 readiness 用例，在 CI 上随 `rabbitmq:3.13` service 一起执行并通过。
 因此 TASK-002 的"未运行测试"清单，在 CI 维度上**为空**。
+
+**目标版本验证的结果**：`mysql:8.0.36`（`deploy/docker-compose.yml` 锁定版本）上，
+迁移从空库建到 V7、`SchemaDictionaryIT` 的 canonical 比对、`ConstraintIT` 的 16 个拒绝场景
+全部通过，与 8.0 最新补丁版结论一致。即此前"只在 8.0.22 上验证过"的缺口已关闭。
+
+一次失败记录（保留，不粉饰）：矩阵首跑（`39117914045`）中 8.0.36 这条红、8.0 绿。
+原因是版本断言写成 `^8.0.36\.`（要求四段），而 `SELECT VERSION()` 在 8.0.36 上返回三段 `8.0.36`。
+**不是数据库或迁移的问题，是断言自己写错了**；改成"等于或以 `<matrix>.` 为前缀"后
+（`9172e09`）两版本全绿。这条断言的价值正在于此——它第一次触发就抓住了自身缺陷。
 
 迁移版本校验同样在 CI 内闭环：
 
@@ -240,9 +252,9 @@ MySQL 的 DDL 非事务性，留下了若干个已提交的 `ALTER TABLE ADD CON
 
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
-| GitHub Actions 实际运行 | **已完成** | run `39116300359` 全绿，集成测试 0 跳过 |
+| GitHub Actions 实际运行 | **已完成** | run `39118089184` 5/5 job 全绿（双 MySQL 版本矩阵），集成测试 0 跳过 |
 | RabbitMQ 相关断言 | 已在 CI 执行 | 本机无 RabbitMQ；readiness 全 UP 用例在 CI 通过 |
-| MySQL 版本覆盖 | 8.0.22（本机）+ `mysql:8.0`（CI） | 两个补丁版本均通过，未出现 `information_schema` 文本差异 |
+| MySQL 版本覆盖 | 8.0.22（本机）+ **8.0.36 与 8.0（CI 矩阵）** | 三个版本均通过，未出现 `information_schema` 文本差异 |
 | 业务功能 | 未实现 | 按范围禁止：无 API、无页面、无 Runner/Judge |
 | CI action 版本 | 未升级 | `checkout@v4` / `setup-java@v4` 基于 Node 20，仅有弃用提示，不影响结论 |
 | `develop → main` 合并 | **未执行** | 已建 PR 待评审；合并 `main` 属独立决策，未自动合并 |
