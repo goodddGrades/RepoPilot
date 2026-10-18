@@ -93,11 +93,17 @@ jobs:
       - name: 记录数据库版本
         run: |
           echo "matrix.mysql = ${{ matrix.mysql }}"
-          # 断言实际连通的服务端版本与矩阵期望一致，避免镜像 tag 漂移后静默测错版本
+          # 断言实际连通的服务端版本与矩阵期望一致，避免镜像 tag 漂移后静默测错版本。
+          # VERSION() 的段数不固定（8.0.36 就是三段），所以用"等于 或 以其为前缀"判断，
+          # 不能用 $(...). 这种要求四段的匹配。
           mysql -h 127.0.0.1 -P 3306 -u repopilot -prepopilot_it_only -N -B \
             -e "SELECT VERSION()" | tee actual-version.txt
-          grep -q "^${{ matrix.mysql }}\." actual-version.txt \
-            || { echo "服务端版本与 ${{ matrix.mysql }} 不符" >&2; exit 1; }
+          case "$(cat actual-version.txt)" in
+            "${{ matrix.mysql }}"|"${{ matrix.mysql }}".*)
+              echo "版本匹配：${{ matrix.mysql }}" ;;
+            *)
+              echo "服务端版本与 ${{ matrix.mysql }} 不符" >&2; exit 1 ;;
+          esac
       - name: 确认目标库为空
         run: |
           count=$(mysql -h 127.0.0.1 -P 3306 -u repopilot -prepopilot_it_only -N -B \
