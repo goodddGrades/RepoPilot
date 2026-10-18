@@ -333,7 +333,7 @@ CHECK：`repeat_count >= 1`。
 
 查询索引：(experiment_id, status)；(status, next_retry_at, created_at, id)；(dataset_case_id)；(created_at, id)；(trace_id)；(id, active_attempt_id)；(id, accepted_attempt_id)；(output_artifact_id)；(import_batch_id)。`(id, active_attempt_id)` 与 `(id, accepted_attempt_id)` 只是两条复合外键的前缀索引，无法并入主键，且各自守护不同不变量（当前尝试 / 已接受尝试），不合并。
 
-CHECK：`repeat_index >= 1`；`attempt_count >= 0`；`(source_system IS NULL) = (source_record_id IS NULL)`；`NOT (output_json IS NOT NULL AND output_artifact_id IS NOT NULL)`；`mode IN ('ONLINE', 'OFFLINE')`；`task_outcome IN ('UNKNOWN', 'SUCCESS', 'FAILURE', 'NOT_APPLICABLE')`；`status IN ('PENDING', 'QUEUED', 'RUNNING', 'EVALUATING', 'COMPLETED', 'FAILED', 'TIMED_OUT', 'CANCELLED')`。
+CHECK：`repeat_index >= 1`；`attempt_count >= 0`；`(source_system IS NULL) = (source_record_id IS NULL)`；`output_json IS NULL OR output_artifact_id IS NULL`（输出要么内联、要么落 Artifact，不能同时给）；`mode IN ('ONLINE', 'OFFLINE')`；`task_outcome IN ('UNKNOWN', 'SUCCESS', 'FAILURE', 'NOT_APPLICABLE')`；`status IN ('PENDING', 'QUEUED', 'RUNNING', 'EVALUATING', 'COMPLETED', 'FAILED', 'TIMED_OUT', 'CANCELLED')`。
 
 外键：(experiment_id) → experiments(id)；RESTRICT。
 
@@ -455,6 +455,7 @@ CHECK：`sequence_no IS NULL OR sequence_no >= 0`。
 | batch_no | INT | 否 | - | 实验内递增，从1开始 |
 | trigger_type | VARCHAR(32) | 否 | - | INITIAL/REEVALUATION/MANUAL |
 | parent_batch_id | CHAR(26) | 是 | - | 重评来源批次，首次批次为空 |
+| initial_experiment_id | CHAR(26) | 是 | 生成列 | `IF(trigger_type = 'INITIAL', experiment_id, NULL)`，STORED；只为 INITIAL 批次产出实验 ID |
 | selection_json | JSON | 否 | - | Run选择范围快照：显式runIds或过滤条件与排除原因 |
 | status | VARCHAR(32) | 否 | PENDING | 技术状态 |
 | expected_job_count | BIGINT | 否 | 0 | 创建Job前冻结的应有Job数 |
@@ -464,11 +465,13 @@ CHECK：`sequence_no IS NULL OR sequence_no >= 0`。
 | created_at | DATETIME(3) | 否 | - | UTC创建时间 |
 | updated_at | DATETIME(3) | 否 | - | UTC更新时间 |
 
-唯一约束：(experiment_id, batch_no)；(id, evaluation_plan_version_id)（供 Job 复合外键引用）；(id, experiment_id)（供批次登记表与父批次复合外键引用，用于强制同实验）。
+唯一约束：(experiment_id, batch_no)；(id, evaluation_plan_version_id)（供 Job 复合外键引用）；(id, experiment_id)（供批次登记表与父批次复合外键引用，用于强制同实验）；(initial_experiment_id)（保证每个实验最多一个 INITIAL 批次）。
+
+`initial_experiment_id` 是唯一按下述方式"条件唯一"的列：生成表达式只在 `trigger_type='INITIAL'` 时写入 `experiment_id`，其余批次为 `NULL`，而 MySQL 唯一索引允许任意多行 `NULL`，因此每个实验最多一个 INITIAL 批次在**数据库层**成立，不依赖 Controller 判断或事务时序。选择生成列而不是"应用层先查再插"，是因为并发启动两个初始批次时应用层检查会双双通过；生成列 + 唯一键让后到者必然拿到重复键错误。
 
 查询索引：(experiment_id, status, created_at)；(status, created_at, id)；(evaluation_plan_version_id)；(parent_batch_id, experiment_id)。后两条为外键前缀索引，显式声明，不依赖 InnoDB 隐式创建；`experiment_id` 已由唯一键覆盖，不再重复建索引。
 
-CHECK：`batch_no >= 1`；`expected_job_count >= 0`；`trigger_type IN ('INITIAL', 'REEVALUATION', 'MANUAL')`；`status IN ('PENDING', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED')`。
+CHECK：`batch_no >= 1`；`expected_job_count >= 0`；`trigger_type IN ('INITIAL', 'REEVALUATION', 'MANUAL')`；`status IN ('PENDING', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED')`；`trigger_type <> 'INITIAL' OR parent_batch_id IS NULL`（初始批次不得有父批次）；`parent_batch_id IS NULL OR parent_batch_id <> id`（禁止自引用成环的单步情形，更长的环由服务层拒绝）。
 
 外键：(experiment_id) → experiments(id)；RESTRICT。
 

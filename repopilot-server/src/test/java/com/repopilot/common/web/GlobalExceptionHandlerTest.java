@@ -38,10 +38,10 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
-    void shouldMapBusinessExceptionToConflict() throws Exception {
+    void shouldMapStateTransitionErrorToConflict() throws Exception {
         mockMvc.perform(get("/test/business"))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value(ErrorCode.BUSINESS_ERROR.name()))
+                .andExpect(jsonPath("$.code").value(ErrorCode.INVALID_STATE_TRANSITION.name()))
                 .andExpect(jsonPath("$.message").value("状态不允许该操作"))
                 .andExpect(jsonPath("$.data").doesNotExist());
     }
@@ -69,7 +69,7 @@ class GlobalExceptionHandlerTest {
     void shouldMapMissingResourceToNotFound() throws Exception {
         mockMvc.perform(get("/test/missing"))
                 .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.code").value(ErrorCode.NOT_FOUND.name()));
+                .andExpect(jsonPath("$.code").value(ErrorCode.RESOURCE_NOT_FOUND.name()));
     }
 
     @Test
@@ -87,7 +87,7 @@ class GlobalExceptionHandlerTest {
 
         @GetMapping("/business")
         String business() {
-            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "状态不允许该操作");
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION, "状态不允许该操作");
         }
 
         @GetMapping("/boom")

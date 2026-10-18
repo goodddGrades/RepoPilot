@@ -38,6 +38,9 @@ server:
 mybatis:
   mapper-locations: classpath:/mapper/**/*.xml
   type-aliases-package: com.repopilot.modules
+  # 只扫描 JsonNode / Instant 两个处理器：它们各自的 Java 类型唯一，不会误伤其他列。
+  # ULID 处理器刻意不在此扫描（库里有 CHAR(64) 哈希列），由 Mapper 参数显式引用。
+  type-handlers-package: com.repopilot.common.persistence
   configuration:
     map-underscore-to-camel-case: true
     default-fetch-size: 100

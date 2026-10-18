@@ -20,6 +20,31 @@ MySQL可用Testcontainers或隔离Compose数据库；无法运行Docker时明确
 
 实际命令由TASK-001确认：Maven工程可用./mvnw test/verify，Gradle工程使用既有wrapper；Python使用已配置pytest；前端用锁文件对应包管理器执行typecheck/build和已有测试。这里是选项，不声称这些命令已在仓库存在。每次交付写执行目录、精确命令、退出码、通过/失败/跳过，不仅写“测试通过”。
 
+## 本仓库的实际分层（TASK-002 已落地）
+
+测试按"是否需要外部基础设施"分成两层，命令本身就能区分，不依赖口头约定：
+
+| 命令 | 执行位置 | 内容 | 依赖 |
+| --- | --- | --- | --- |
+| `./mvnw test` | `repopilot-server/` | 只跑 `*Test`：状态机、ULID、分页、异常映射、requestId、健康服务 | 无，离线可跑 |
+| `./mvnw verify` | `repopilot-server/` | 先跑单测，再由 Failsafe 跑 `*IT`：空库迁移、字典比对、约束拒绝、JSON/UTC/ULID 映射、健康接口 | 真实 MySQL 8（`REPOPILOT_IT_DB_*`）与 RabbitMQ（仅就绪探针用例） |
+
+Surefire 显式排除 `**/*IT.java`，Failsafe 显式只收 `**/*IT.java` 并设 `failIfNoTests`：
+以前只配了 `excludedGroups`，`*IT` 连"跳过"都不会出现在报告里，这是被纠正的实际缺陷。
+
+集成测试连接参数（缺任何一个主机变量都会启动失败，不会静默跳过）：
+
+```
+REPOPILOT_IT_DB_HOST=127.0.0.1
+REPOPILOT_IT_DB_PORT=3306
+REPOPILOT_IT_DB_NAME=repopilot_it
+REPOPILOT_IT_DB_USER=repopilot
+REPOPILOT_IT_DB_PASSWORD=...
+```
+
+CI 里额外设置 `REPOPILOT_IT_REQUIRE_ALL_UP=true`，把"所有依赖都 UP"的就绪探针断言打开；
+本地只跑 MySQL 时该用例会被显式跳过并在报告中单列，不会被算作通过。
+
 本仓库的具体端口、启动顺序与已实测命令见 [本地开发 Runbook](./01-local-development.md)；本文不重复维护命令清单，避免两处漂移。
 
 ## CI与文档

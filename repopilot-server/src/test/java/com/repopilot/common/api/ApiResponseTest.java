@@ -57,8 +57,8 @@ class ApiResponseTest {
     void errorCodeShouldExposeHttpStatus() {
         assertThat(ErrorCode.OK.httpStatus().value()).isEqualTo(200);
         assertThat(ErrorCode.VALIDATION_ERROR.httpStatus().value()).isEqualTo(400);
-        assertThat(ErrorCode.NOT_FOUND.httpStatus().value()).isEqualTo(404);
+        assertThat(ErrorCode.RESOURCE_NOT_FOUND.httpStatus().value()).isEqualTo(404);
         assertThat(ErrorCode.INTERNAL_ERROR.httpStatus().value()).isEqualTo(500);
-        assertThat(ErrorCode.DEPENDENCY_UNAVAILABLE.httpStatus().value()).isEqualTo(503);
+        assertThat(ErrorCode.SERVICE_UNAVAILABLE.httpStatus().value()).isEqualTo(503);
     }
 }

@@ -112,11 +112,12 @@ Trace游标使用(created_at? 不使用) **(occurred_at,id)** 升序，cursor编
 报告与对比的批次选择规则（**默认值固定，不随后台重评漂移**）：
 
 1. `batchScope=SPECIFIED`（或直接传 `batchId`）：使用指定批次；`SPECIFIED` 缺 `batchId` 返回 400。
-2. `batchScope=LATEST`：使用该实验**最新一个已完成**批次（`status=COMPLETED`，其次 `PARTIAL_FAILED`），用于"最新评测"入口。
+2. `batchScope=LATEST`：使用该实验**最新创建**的批次（按 `created_at`, `id` 倒序），**不跳过任何状态**。若该批次仍为 `PENDING/RUNNING` 或已 `FAILED/CANCELLED`，响应照常返回该批次及其 `status`，报告指标标记为不可用或部分可用，**不得静默回退到上一个成功批次**。
 3. 不传任何批次参数：**默认返回初始批次**（`trigger_type=INITIAL`），而不是"最近一个批次"，避免同一 URL 在重评后返回不同历史结论。
-4. 响应必须回显 `batchId` 与 `batchScope`，前端据此标注"初始评测 / 最新评测 / 指定批次"。实验没有初始批次时明确报错，不静默回退到其他批次或另一方案版本。
+4. 响应必须回显 `batchId`、`batchScope` 与 `batchStatus`，前端据此标注"初始评测 / 最新评测 / 指定批次"。实验没有初始批次时明确报错，不静默回退到其他批次或另一方案版本。
+5. 若将来需要"最近一次跑完的评测"，单独增加 `batchScope=LATEST_COMPLETED`，不改变 `LATEST` 的语义。`LATEST` 与 `LATEST_COMPLETED` 必须能同时解释同一实验的两个不同批次，因此两者不可合并。
 
-5. `comparison` 跨批次比较（对比两版 Judge）必须同时给 `baselineBatchId` 与 `candidateBatchId`，只给一个返回 400。不同方案版本的跨批次比较不自动判定回归，只返回"不可比原因=方案版本不同"，由人决定是否做描述性对比。
+6. `comparison` 跨批次比较（对比两版 Judge）必须同时给 `baselineBatchId` 与 `candidateBatchId`，只给一个返回 400。不同方案版本的跨批次比较不自动判定回归，只返回"不可比原因=方案版本不同"，由人决定是否做描述性对比。
 
 operator从可信认证上下文取得；开发模式固定测试身份可配置，只绑定本机，不把浏览器任意operatorId当成已鉴权身份。V1同一操作者允许提交和审核，但在记录中标出selfReview=true；不能宣传为双人审核。
 

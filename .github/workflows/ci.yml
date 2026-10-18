@@ -1,0 +1,151 @@
+name: ci
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 仅用于 CI 的一次性测试凭据，不是生产密钥；仓库里不保存任何可复用的秘密
+  IT_DB_NAME: repopilot_it
+  IT_DB_USER: repopilot
+  IT_DB_PASSWORD: repopilot_it_only
+
+jobs:
+  design:
+    name: 设计字典自检
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: tools/requirements-design.txt
+      - run: pip install -r tools/requirements-design.txt
+      - name: 静态规则检查
+        run: python tools/verify_design.py
+      - name: 迁移 SQL 与字典一致
+        run: python tools/gen_ddl_from_dict.py --check
+      - name: 实体与 Mapper 与字典一致
+        run: python tools/gen_java_from_dict.py --check
+
+  backend:
+    name: 后端（MySQL 8 + RabbitMQ）
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root_it_only
+          MYSQL_DATABASE: repopilot_it
+          MYSQL_USER: repopilot
+          MYSQL_PASSWORD: repopilot_it_only
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot_it_only"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+      rabbitmq:
+        image: rabbitmq:3.13
+        env:
+          RABBITMQ_DEFAULT_USER: repopilot
+          RABBITMQ_DEFAULT_PASS: repopilot_rabbit_only
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd="rabbitmq-diagnostics -q ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: 安装 MySQL 客户端
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client
+      - name: 等待 MySQL 可连接
+        run: |
+          for i in $(seq 1 30); do
+            if mysqladmin ping -h 127.0.0.1 -P 3306 -u repopilot -prepopilot_it_only --silent; then
+              echo "MySQL ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "MySQL 未就绪" >&2; exit 1
+      - name: 确认目标库为空
+        run: |
+          count=$(mysql -h 127.0.0.1 -P 3306 -u repopilot -prepopilot_it_only -N -B \
+            -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$IT_DB_NAME'")
+          echo "existing tables: $count"
+          test "$count" = "0"
+      - name: 单元测试 + 集成测试 + 打包
+        env:
+          REPOPILOT_IT_DB_HOST: 127.0.0.1
+          REPOPILOT_IT_DB_PORT: '3306'
+          REPOPILOT_IT_DB_NAME: ${{ env.IT_DB_NAME }}
+          REPOPILOT_IT_DB_USER: ${{ env.IT_DB_USER }}
+          REPOPILOT_IT_DB_PASSWORD: ${{ env.IT_DB_PASSWORD }}
+          # CI 里依赖齐全，要求就绪探针真的返回 UP
+          REPOPILOT_IT_REQUIRE_ALL_UP: 'true'
+          SPRING_RABBITMQ_HOST: 127.0.0.1
+          SPRING_RABBITMQ_PORT: '5672'
+          SPRING_RABBITMQ_USERNAME: repopilot
+          SPRING_RABBITMQ_PASSWORD: repopilot_rabbit_only
+        working-directory: repopilot-server
+        run: ./mvnw -B verify
+      - name: 校验迁移版本连续
+        run: |
+          mysql -h 127.0.0.1 -P 3306 -u repopilot -prepopilot_it_only -N -B -e \
+            "SELECT GROUP_CONCAT(version ORDER BY installed_rank) FROM $IT_DB_NAME.flyway_schema_history WHERE success=1" \
+            | tee versions.txt
+          test "$(cat versions.txt)" = "1,2,3,4,5,6,7"
+      - name: 上传测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-failsafe-reports
+          path: |
+            repopilot-server/target/surefire-reports/
+            repopilot-server/target/failsafe-reports/
+          if-no-files-found: warn
+
+  worker:
+    name: Worker（pytest）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: repopilot-worker/requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+        working-directory: repopilot-worker
+      - run: python -m pytest -q
+        working-directory: repopilot-worker
+
+  web:
+    name: Web（构建）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: repopilot-web/package-lock.json
+      - run: npm ci
+        working-directory: repopilot-web
+      - run: npm run build
+        working-directory: repopilot-web

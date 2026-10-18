@@ -8,6 +8,8 @@ import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
@@ -77,7 +79,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({NoResourceFoundException.class})
     public ResponseEntity<ApiResponse<Void>> handleNoResource(NoResourceFoundException ex) {
         log.warn("资源不存在: {}", ex.getResourcePath());
-        return build(ErrorCode.NOT_FOUND, ErrorCode.NOT_FOUND.defaultMessage(), null);
+        return build(ErrorCode.RESOURCE_NOT_FOUND, ErrorCode.RESOURCE_NOT_FOUND.defaultMessage(), null);
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
@@ -92,10 +94,42 @@ public class GlobalExceptionHandler {
         return build(ErrorCode.UNSUPPORTED_MEDIA_TYPE, ErrorCode.UNSUPPORTED_MEDIA_TYPE.defaultMessage(), null);
     }
 
+    /**
+     * 唯一键冲突：重复业务键、重复幂等键、重复批次编号都走这里。
+     *
+     * <p>不把驱动原文透出：MySQL 的 1062 报文包含表名与索引名，属于实现细节；
+     * 调用方拿到稳定的 409 与资源冲突语义即可，具体原因查服务端日志。
+     */
+    @ExceptionHandler(DuplicateKeyException.class)
+    public ResponseEntity<ApiResponse<Void>> handleDuplicateKey(DuplicateKeyException ex) {
+        log.warn("唯一约束冲突: {}", rootMessage(ex));
+        return build(ErrorCode.RESOURCE_CONFLICT, "资源已存在或违反唯一约束", null);
+    }
+
+    /**
+     * 其余完整性约束失败（外键、CHECK）。
+     *
+     * <p>这类错误通常意味着调用链漏了校验，因此记 warn 而不是 error：它是可预期的输入问题，
+     * 不是服务故障。响应同样不包含 SQL 与约束名。
+     */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleIntegrityViolation(DataIntegrityViolationException ex) {
+        log.warn("数据完整性约束失败: {}", rootMessage(ex));
+        return build(ErrorCode.VALIDATION_ERROR, "数据不满足完整性约束", null);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleUnexpected(Exception ex) {
         log.error("未处理异常", ex);
         return build(ErrorCode.INTERNAL_ERROR, ErrorCode.INTERNAL_ERROR.defaultMessage(), null);
+    }
+
+    private String rootMessage(Throwable ex) {
+        Throwable cause = ex;
+        while (cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause.getMessage();
     }
 
     private FieldViolation toViolation(FieldError fieldError) {

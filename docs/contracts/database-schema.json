@@ -1199,7 +1199,7 @@
         "repeat_index >= 1",
         "attempt_count >= 0",
         "(source_system IS NULL) = (source_record_id IS NULL)",
-        "NOT (output_json IS NOT NULL AND output_artifact_id IS NOT NULL)",
+        "output_json IS NULL OR output_artifact_id IS NULL",
         "mode IN ('ONLINE', 'OFFLINE')",
         "task_outcome IN ('UNKNOWN', 'SUCCESS', 'FAILURE', 'NOT_APPLICABLE')",
         "status IN ('PENDING', 'QUEUED', 'RUNNING', 'EVALUATING', 'COMPLETED', 'FAILED', 'TIMED_OUT', 'CANCELLED')"
@@ -1722,7 +1722,7 @@
       ]
     },
     "evaluation_batches": {
-      "description": "一次对待评测Run集合按固定方案版本的批量评测；Run集合由evaluation_batch_runs固定，重评创建新批次",
+      "description": "一次对待评测Run集合按固定方案版本的批量评测；Run集合由evaluation_batch_runs固定，重评创建新批次；每实验最多一个INITIAL批次由生成列唯一键强制",
       "columns": [
         {
           "name": "id",
@@ -1759,6 +1759,14 @@
           "type": "CHAR(26)",
           "nullable": true,
           "description": "重评来源批次，首次批次为空"
+        },
+        {
+          "name": "initial_experiment_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "generated_expression": "IF(trigger_type = 'INITIAL', experiment_id, NULL)",
+          "generated_stored": true,
+          "description": "生成列：INITIAL批次取experiment_id，其余为NULL；唯一键利用MySQL多NULL允许的特性，保证每实验最多一个INITIAL批次"
         },
         {
           "name": "selection_json",
@@ -1826,6 +1834,9 @@
         [
           "id",
           "experiment_id"
+        ],
+        [
+          "initial_experiment_id"
         ]
       ],
       "indexes": [
@@ -1851,7 +1862,9 @@
         "batch_no >= 1",
         "expected_job_count >= 0",
         "trigger_type IN ('INITIAL', 'REEVALUATION', 'MANUAL')",
-        "status IN ('PENDING', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED')"
+        "status IN ('PENDING', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED')",
+        "trigger_type <> 'INITIAL' OR parent_batch_id IS NULL",
+        "parent_batch_id IS NULL OR parent_batch_id <> id"
       ],
       "foreign_keys": [
         {

@@ -101,8 +101,31 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
-          <!-- 默认只跑快速单元测试；*IT 需基础设施就绪后显式执行 -->
-          <excludedGroups>integration</excludedGroups>
+          <!-- 单元测试必须不依赖任何外部基础设施：*IT 一律排除，由 Failsafe 在 verify 阶段执行。
+               注意 exclude 而不是 excludedGroups —— 之前只配 excludedGroups 时，
+               Surefire 根本不会选中 *IT，等于"跳过"都算不上。 -->
+          <excludes>
+            <exclude>**/*IT.java</exclude>
+          </excludes>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <includes>
+            <include>**/*IT.java</include>
+          </includes>
+          <!-- 集成测试失败必须让 mvn verify 失败，不能被"测试类没匹配到"掩盖 -->
+          <failIfNoTests>true</failIfNoTests>
         </configuration>
       </plugin>
     </plugins>

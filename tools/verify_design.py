@@ -105,6 +105,19 @@ def main():
     check(['id','experiment_id'] in tables['evaluation_runs']['unique_keys'], 'run composite key')
     check(any(f['columns']==['parent_batch_id','experiment_id'] and f['references_table']=='evaluation_batches'
               for f in tables['evaluation_batches']['foreign_keys']), 'parent batch must stay in experiment')
+    # 每个实验最多一个 INITIAL 批次必须由数据库保证：生成列 + 唯一键，而不是应用层先查后插
+    batches = tables['evaluation_batches']
+    bcols = {c['name']:c for c in batches['columns']}
+    check('initial_experiment_id' in bcols, 'initial batch generated column')
+    check(bool(bcols['initial_experiment_id'].get('generated_expression')), 'initial batch expression')
+    check("INITIAL" in bcols['initial_experiment_id']['generated_expression'], 'initial batch expression mentions INITIAL')
+    check(bcols['initial_experiment_id']['nullable'], 'initial batch column must allow NULL for non-INITIAL rows')
+    check(['initial_experiment_id'] in batches['unique_keys'], 'initial batch unique key')
+    for name,t in tables.items():
+        for c in t['columns']:
+            if c.get('generated_expression'):
+                check(c['nullable'], 'generated column must be nullable for multi-NULL uniqueness: '+name+'.'+c['name'])
+                check(c['name'] not in t['primary_key'], 'generated column in primary key: '+name+'.'+c['name'])
 
     validators={}
     for path in sorted((ROOT/'docs/contracts').glob('*.schema.json')):
@@ -162,6 +175,10 @@ def main():
     # 报告默认语义必须写死在契约里，不能随后台重评漂移
     api=(ROOT/'docs/architecture/04-api-contract.md').read_text()
     check('batchScope' in api and '默认返回初始批次' in api, 'report default batch semantics')
+    # LATEST 不得静默跳过未完成或失败批次，否则"最新评测"会返回旧结论
+    check('LATEST' in api and '最新创建' in api, 'LATEST means newest created batch')
+    check('不得静默回退' in api, 'LATEST must not fall back silently')
+    check('LATEST_COMPLETED' in api, 'latest completed scope must stay separate')
 
     print(json.dumps({'status':'PASS','checks':checks,'tables':len(tables),'json_schemas':len(validators),'positive_samples':len(samples),'negative_samples':len(negative),'scope':'设计文件静态检查；不代表MySQL迁移或应用验收'},ensure_ascii=False,indent=2))
 

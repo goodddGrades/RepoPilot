@@ -3,9 +3,15 @@
 本文件是**项目级强制约束**，任何参与本仓库开发的 Agent 或人类工程师都必须先阅读本文件，
 再按 [`docs/README.md`](./docs/README.md) 的阅读顺序加载对应契约。
 
-当前进度：**TASK-001 有条件验收通过**（三端基础工程 + 公共组件 + 基础设施编排；真实 MySQL/RabbitMQ/Flyway 实跑转入 CI 验收）。
-**TASK-002 设计已冻结至 V1.2（28 表，含评测批次与批次 Run 登记），尚未获实施授权，不得开始编码。**
-TASK-003 及之后不得提前实现。
+当前进度：**TASK-001 有条件验收通过**；**TASK-002 已按设计 V1.2.1 实施完成**（28 表、V2–V7 迁移、
+持久化实体与基础 Mapper、ULID/JSON/UTC 映射、状态机规则、Surefire/Failsafe 分层、GitHub Actions）。
+数据库验收在本地隔离 MySQL 8.0.22 上执行：空库迁移成功、字典逐项比对通过、约束场景全部被拒绝。
+**TASK-003 及之后不得提前实现。**
+
+实施约束（TASK-002 起生效）：
+- 迁移 SQL 与实体、Mapper 由 `tools/gen_ddl_from_dict.py`、`tools/gen_java_from_dict.py` 从字典生成，
+  **不允许手改生成物**；改字典后重新生成，CI 用 `--check` 校验一致性。
+- 公共组件只复用不重建；`*IT` 只通过真实 MySQL 验证，禁止 H2/SQLite 替代。
 
 ---
 

@@ -1,5 +1,6 @@
 package com.repopilot;
 
+import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
@@ -14,12 +15,14 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
  * <p>包结构约定（详见 {@code com.repopilot.modules} 下的 package-info）：
  * <pre>
  * com.repopilot
- *   ├── common      通用能力：统一响应、异常、健康检查、基础配置
- *   └── modules     业务模块（V1 仅保留空模块边界，不含任何业务实现）
+ *   ├── common      通用能力：统一响应、异常、健康检查、ID/状态/持久化基础
+ *   └── modules     业务模块（agent / dataset / evaluationconfig / experiment /
+ *                   trace / evaluation / annotation / importing）
  * </pre>
  */
 @SpringBootApplication
 @ConfigurationPropertiesScan
+@MapperScan({"com.repopilot.modules", "com.repopilot.common.reliability"})
 public class RepoPilotServerApplication {
 
     public static void main(String[] args) {

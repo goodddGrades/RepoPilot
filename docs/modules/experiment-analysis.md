@@ -18,7 +18,7 @@
 
 V1先支持同一Experiment内Target比较，因此共享数据集与方案版本。报告与比较都以**评测批次（EvaluationBatch）**为单位：同一批次内的 Target 才共享方案版本与算子版本，跨批次（例如重评后换了 Judge 版本）默认不可直接判定回归。配对键为(datasetCaseId,repeatIndex)。仅比较双方可用的观察，并同时展示总槽位、成功配对、单侧缺失与技术错误。未知AgentVersion的导入Target可以做描述性对比，但显示来源未知，不声称是受控因果实验。
 
-报告响应必须回显 `batchId`、`planVersion` 与 `triggerType`；未显式指定批次时取最近终态批次。同一 Run 在不同批次的结果分别展示，不用新分数覆盖旧分数，也不把两批结果混进同一个分母。
+报告响应必须回显 `batchId`、`batchScope`、`batchStatus`、`planVersion` 与 `triggerType`；未显式指定批次时固定取初始批次，`batchScope=LATEST` 取最新创建的批次（含 RUNNING/FAILED，不回退）。同一 Run 在不同批次的结果分别展示，不用新分数覆盖旧分数，也不把两批结果混进同一个分母。
 
 输出：PASS→FAIL回归、FAIL→PASS改善、稳定、未知/缺失、scoreDelta、成本/耗时变化。对多次重复既展示逐次配对，也按Case聚合均值与分布；不能把同Case的相关重复当独立样本计算显著性。跨实验且版本不同的受控比较不在V1自动门禁范围，先返回不可比原因。
 

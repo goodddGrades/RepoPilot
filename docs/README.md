@@ -7,11 +7,14 @@
 
 1. [`00-product-scope.md`](./00-product-scope.md) — 产品范围、V1 边界、交付阶段
 2. [`architecture/01-system-overview.md`](./architecture/01-system-overview.md) — 组件职责与调度分期
-3. [`reviews/task-002-freeze.md`](./reviews/task-002-freeze.md) — **TASK-002 设计冻结 V1.2：批次 Run 集合、跨实验约束、报告默认语义、索引审计（最新）**
-4. [`reviews/task-002-revision.md`](./reviews/task-002-revision.md) — TASK-002 修订：评测批次与契约收敛
-5. [`reviews/task-002-delta.md`](./reviews/task-002-delta.md) — 相对早期草案的修订（为什么这样做）
-6. [`reviews/repository-alignment.md`](./reviews/repository-alignment.md) — 本仓库核对结果、实际版本与偏差
-7. [`reviews/design-merge-report.md`](./reviews/design-merge-report.md) — 设计包合并时的冲突清单与处置
+3. [`reviews/task-002-implementation.md`](./reviews/task-002-implementation.md) — **TASK-002 实施交付报告：迁移、实体、测试与偏差（最新）**
+4. [`reviews/task-002-ddl-indexes.md`](./reviews/task-002-ddl-indexes.md) — TASK-002 实际 DDL 索引清单（由 information_schema 导出）
+5. [`reviews/task-002-v121-delta.md`](./reviews/task-002-v121-delta.md) — TASK-002 设计 V1.2.1：INITIAL 批次唯一、LATEST 语义、离线单次上传
+6. [`reviews/task-002-freeze.md`](./reviews/task-002-freeze.md) — TASK-002 设计冻结 V1.2：批次 Run 集合、跨实验约束、报告默认语义、索引审计
+7. [`reviews/task-002-revision.md`](./reviews/task-002-revision.md) — TASK-002 修订：评测批次与契约收敛
+8. [`reviews/task-002-delta.md`](./reviews/task-002-delta.md) — 相对早期草案的修订（为什么这样做）
+9. [`reviews/repository-alignment.md`](./reviews/repository-alignment.md) — 本仓库核对结果、实际版本与偏差
+10. [`reviews/design-merge-report.md`](./reviews/design-merge-report.md) — 设计包合并时的冲突清单与处置
 
 ## 全局架构
 

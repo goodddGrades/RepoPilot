@@ -66,9 +66,10 @@ Java 是唯一业务写入入口。发布时与编辑时都锁定同一个版本
 2. `batch_no` 在实验内递增；历史批次只读，不修改其方案版本、Run 集合或已产生的 Job/Result。批次的 Run 集合落库为 `evaluation_batch_runs` 的确定行，不是查询时动态过滤。
 3. 同一 Run 在不同批次可以再次评测；同一批次内同一 Run×方案项最多一个 Job。Job 重试仍只增加 JobAttempt，不新建 Job。
 4. 批次状态不反向改变 Experiment.status。Experiment.status 只描述执行管道与初始批次；重评失败不应把历史实验改写成 PARTIAL_FAILED。每个批次有独立的 PENDING/RUNNING/COMPLETED/PARTIAL_FAILED/FAILED/CANCELLED，即使初始批次早已完成，新批次仍可 RUNNING 或 FAILED。
-5. 报告与对比的批次**默认值固定**：不传批次参数时返回初始批次；"最新评测"必须显式 `batchScope=LATEST`；指定批次用 `batchId`。响应回显实际使用的 batchId 与 batchScope，禁止"看起来是旧数据、实际是新结果"。
+5. 报告与对比的批次**默认值固定**：不传批次参数时返回初始批次；"最新评测"必须显式 `batchScope=LATEST`，其语义是**最新创建**的批次，包含 RUNNING/FAILED，不静默回退到上一个成功批次；指定批次用 `batchId`。响应回显实际使用的 batchId、batchScope 与 batchStatus，禁止"看起来是旧数据、实际是新结果"。
 6. 没有 Run 的批次不允许创建；`expected_job_count` 在创建 Job 前冻结，用于判断批次是否完整。
 7. 在线与离线共用同一批次、Job、Attempt、Result 链路；离线 Run 只是缺少 RunAttempt，不另建评测表。
+8. **每个实验最多一个 INITIAL 批次**，由 `evaluation_batches.initial_experiment_id` 生成列上的唯一键在数据库层保证：并发创建两个初始批次时，后到者拿到重复键错误，而不是靠先查后插。重评与补评一律使用 `REEVALUATION` 或 `MANUAL`。
 
 ## 在线与离线
 

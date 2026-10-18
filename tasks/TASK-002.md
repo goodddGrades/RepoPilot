@@ -6,7 +6,7 @@
 - 未验证项（真实 MySQL / RabbitMQ / MinIO / Flyway 实跑）**不在本任务重复手工验证**，转由本任务的 CI 集成测试承担。
 - TASK-001 已实现的公共组件**必须复用，禁止重写第二套**（清单见 §3）。
 - 本任务只做数据库结构与公共基础，**不实现任何业务 API、业务页面、Runner 或 Judge**。
-- 设计已于 2026-10-18 冻结为 **V1.2**：新增 `evaluation_batches`、`evaluation_batch_runs` 与跨实验复合外键，离线 Run 一律绑定 DatasetCase。裁决记录见 `docs/reviews/task-002-revision.md`、`docs/reviews/task-002-freeze.md`。**未获实施授权前不得开始编码。**
+- 设计已冻结为 **V1.2.1**：V1.2 的新增 `evaluation_batches`、`evaluation_batch_runs` 与跨实验复合外键不变；V1.2.1 只补三项实施约束——每实验最多一个 INITIAL 批次（生成列 + 唯一键）、`batchScope=LATEST` 取最新创建批次不回退、离线导入单文件一次上传。裁决记录见 `docs/reviews/task-002-revision.md`、`docs/reviews/task-002-freeze.md`、`docs/reviews/task-002-v121-delta.md`。**已获实施授权（2026-10-18），不含 Git Push 授权。**
 
 ## 正式执行指令
 
@@ -102,6 +102,8 @@ TASK-001 已存在，直接复用，不得重建：
 | 重复 eventId；同 Job 两个最终 Result | UNIQUE 拒绝 |
 | 同批次同 Run 同 planItem 重复 Job | UNIQUE 拒绝 |
 | 同 Run 在**不同批次**各建一个 Job | 允许 |
+| 同一实验建第二个 `trigger_type=INITIAL` 的批次 | 唯一键 `(initial_experiment_id)` 拒绝；`REEVALUATION`/`MANUAL` 批次不受限（生成列为 NULL） |
+| `trigger_type=INITIAL` 但填了 `parent_batch_id`；或批次把自己作为父批次 | CHECK 拒绝 |
 | 同批次重复登记同一 Run | 主键 `(batch_id, run_id)` 拒绝 |
 | Job 的 Run 未登记在本批次 | 复合外键 `(batch_id, run_id)` 拒绝 |
 | 跨实验把 Run 登记进批次 | 复合外键拒绝（登记表 `experiment_id` 必须同时满足两条父外键） |
@@ -162,7 +164,7 @@ Agent/数据集/方案 CRUD、在线业务、导入业务、Runner/Judge、标�
 ## 9. 验收
 
 - 28 表及全部设计约束落实；迁移在空真实 MySQL 与 CI 中均可执行。
-- 交付报告列出**实际 DDL 的全部索引**，并与字典逐表比对：每条外键都有显式左前缀索引，实际索引数等于设计声明数，**没有 InnoDB 隐式创建的索引**。字典当前声明 28 个主键、31 个额外 UNIQUE、46 个二级索引、47 条外键（以导出结果为准）。
+- 交付报告列出**实际 DDL 的全部索引**，并与字典逐表比对：每条外键都有显式左前缀索引，实际索引数等于设计声明数，**没有 InnoDB 隐式创建的索引**。字典当前声明 28 个主键、32 个额外 UNIQUE、46 个二级索引、47 条外键（以导出结果为准）。
 - `evaluation_batches`、`evaluation_batch_runs` 与 Job 的复合外键真实生效；同 Run 跨批次重评路径在数据库层可表达；跨实验批次/Run 组合被拒绝。
 - 持久化 JSON/UTC/ULID 映射通过。
 - 公共组件复用而非重建；契约冻结项未被改动。
@@ -180,6 +182,9 @@ Agent/数据集/方案 CRUD、在线业务、导入业务、Runner/Judge、标�
 | 是否引入批次 Run 关联表 | **引入** `evaluation_batch_runs`，固定每次评测的 Run 集合 |
 | 是否允许跨 Experiment 关联 Run | **不允许**，由两条复合外键强制 |
 | 报告未传 batchId 的默认语义 | **固定返回初始批次**；最新评测必须显式 `batchScope=LATEST` |
+| 每实验 INITIAL 批次数量 | 最多一个，由 `initial_experiment_id` 生成列唯一键在数据库层强制，不接受仅 Controller 判断 |
+| `batchScope=LATEST` 的时间语义 | **最新创建**的批次，包含 `RUNNING`/`FAILED`；不回退到上一个成功批次；`LATEST_COMPLETED` 另立参数 |
+| 离线导入的操作次数 | 数据处理分两阶段，但**同一文件只上传一次**；V1 允许分两步操作，导入向导阶段再合并入口 |
 | 外键索引 | 全部显式声明，禁止依赖 InnoDB 隐式索引，最终 DDL 与字典逐表比对 |
 | 公共组件与 API 信封 | 不改结构，只做枚举值收敛与必要扩展 |
 | 实施授权 | **未授权前不编码**；完成后等待下一轮授权 |
