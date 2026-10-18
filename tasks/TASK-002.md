@@ -6,6 +6,7 @@
 - 未验证项（真实 MySQL / RabbitMQ / MinIO / Flyway 实跑）**不在本任务重复手工验证**，转由本任务的 CI 集成测试承担。
 - TASK-001 已实现的公共组件**必须复用，禁止重写第二套**（清单见 §3）。
 - 本任务只做数据库结构与公共基础，**不实现任何业务 API、业务页面、Runner 或 Judge**。
+- 设计已于 2026-10-18 冻结为 **V1.2**：新增 `evaluation_batches`、`evaluation_batch_runs` 与跨实验复合外键，离线 Run 一律绑定 DatasetCase。裁决记录见 `docs/reviews/task-002-revision.md`、`docs/reviews/task-002-freeze.md`。**未获实施授权前不得开始编码。**
 
 ## 正式执行指令
 
@@ -22,37 +23,41 @@
 - `docs/architecture/05-event-contract.md`
 - `docs/architecture/06-reliability-design.md`
 - `docs/modules/evaluation-engine.md`（批次语义）
-- `docs/reviews/task-002-revision.md`（本次修订的理由与裁决记录）
+- `docs/reviews/task-002-revision.md`（修订理由与裁决记录）
+- `docs/reviews/task-002-freeze.md`（V1.2 冻结项：批次 Run 集合、跨实验约束、报告默认语义、索引审计）
 - `docs/reviews/task-001-final-acceptance.md`
 - `docs/development-guide.md`、`AGENTS.md`
 
 ## 1. 范围
 
-实现 **27 张表**、全部主外键/索引/CHECK、持久化 Entity 与基础 Mapper、ULID、JSON/UTC TypeHandler、状态枚举与转换表；扩展（不是重写）公共 API 组件；接入 OpenAPI 公共契约；补齐 **Surefire/Failsafe 分层**与 **GitHub Actions 集成验收**；同步文档。
+实现 **28 张表**、全部主外键/索引/CHECK、持久化 Entity 与基础 Mapper、ULID、JSON/UTC TypeHandler、状态枚举与转换表；扩展（不是重写）公共 API 组件；接入 OpenAPI 公共契约；补齐 **Surefire/Failsafe 分层**与 **GitHub Actions 集成验收**；同步文档。
 
-表名以 `database-schema.json` 为唯一来源（27 张）：
+表名以 `database-schema.json` 为唯一来源（28 张）：
 
 ```
 agents, agent_versions, datasets, dataset_versions, dataset_cases,
 evaluator_definitions, evaluation_plans, evaluation_plan_versions, evaluation_plan_items,
 experiments, experiment_targets, evaluation_runs, run_attempts, artifacts, trace_events,
-evaluation_batches, evaluation_jobs, evaluation_job_attempts, evaluation_results,
-annotation_tasks, annotation_records, import_batches, import_records, import_errors,
-outbox_events, inbox_events, api_idempotency_keys
+evaluation_batches, evaluation_batch_runs, evaluation_jobs, evaluation_job_attempts,
+evaluation_results, annotation_tasks, annotation_records, import_batches, import_records,
+import_errors, outbox_events, inbox_events, api_idempotency_keys
 ```
 
 仅建立可靠性辅助表与实体，**不在本任务实现 Outbox 发布器、Inbox 消费者、调度器或 API 幂等中间件**。状态转换为纯规则组件，业务动作由后续 TASK 实现。不要把字段表复制到第二个独立版本。
 
-## 2. 本任务必须落实的四个领域决定
+## 2. 本任务必须落实的领域决定
 
 | 决定 | 实现要求 |
 | --- | --- |
-| Agent 执行与评测解耦 | Run / RunAttempt 只描述执行；评测一律经 `evaluation_batches → evaluation_jobs`。禁止 Job 直接挂 Run 而无批次 |
+| Agent 执行与评测解耦 | Run / RunAttempt 只描述执行；评测一律经 `evaluation_batches → evaluation_batch_runs → evaluation_jobs`。禁止 Job 直接挂 Run 而无批次 |
 | 一次 Run 可多次执行 | 失败重试 = 同一 Run 新增 RunAttempt；`accepted_attempt_id` 锁定评测输入；不新增 Run 槽位 |
 | 历史 Run 可重评 | 新建 `EvaluationBatch`（`trigger_type=REEVALUATION`，`parent_batch_id` 指向原批次），复用已封口 Run 与 Trace，**不得重跑 Agent**，旧批次 Job/Result 只读 |
+| 批次固定 Run 集合 | 建批次时把 `runIds`/过滤条件解析成具体行写入 `evaluation_batch_runs`（主键 `(batch_id, run_id)`）；Job 的 `(batch_id, run_id)` 必须指向登记行，禁止"查询时再过滤" |
+| 批次与 Run 同实验 | 登记表带 `experiment_id` 快照列，两条复合外键（→ 批次、→ Run）共用它；父批次同样用 `(parent_batch_id, experiment_id)` 复合外键 |
 | 在线离线共用引擎 | 两种模式共用同一 Batch/Job/JobAttempt/Result 表与服务；离线只是没有 RunAttempt，**禁止**为离线建第二套评测表或第二套算子结果结构 |
+| 离线必须绑定样本 | 所有 Run 的 `dataset_case_id` NOT NULL；导入可在 `DATASET_CASES` 阶段向**草稿**版本自动生成 DatasetCase，但不得伪造 Ground Truth、工具轨迹或 `task_outcome=SUCCESS`；`OFFLINE_RUNS` 阶段的 caseKey 必须命中已发布样本 |
 
-结果版本由批次承载：**不新增 `evaluation_results.version` 列**。
+结果版本由批次承载：**不新增 `evaluation_results.version` 列**。离线自动生成样本的细节见 `docs/architecture/02-domain-model.md` 的"离线导入与样本归属"。
 
 ## 3. 公共组件：复用清单与允许的扩展
 
@@ -76,9 +81,9 @@ TASK-001 已存在，直接复用，不得重建：
 ## 4. 实施顺序
 
 1. 核对现有 migration、MySQL 版本、Entity 与公共组件；列出可复用项与差异，不无理由重写。
-2. 逐表核对关系、复合外键的被引用 UNIQUE 与循环依赖；整理预期 DDL 清单（先表后外键）。
-3. **在 V1 之后新增迁移**：从 `V2` 起连续编号，推荐 `V2` 身份与配置、`V3` 实验与执行、`V4` 评测批次与结果、`V5` 人工与导入、`V6` 可靠性辅助、`V7` 补循环外键。不修改 V1，不关闭 `foreign_key_checks` 掩盖依赖，不用 `repair` 掩盖半完成变更。
-4. 建持久化 Entity 与 Mapper：JSON 用 `JsonNode`，UTC 用 `Instant`，CHAR(26) 用 ULID TypeHandler；不返回 Entity 作为 API DTO；Mapper 只开放本任务所需基础读写。
+2. 逐表核对关系、复合外键的被引用 UNIQUE、可空列与索引前缀；整理预期 DDL 清单（先表后外键）。索引按"约束键 / 外键前缀索引 / 查询索引"三类登记，**不允许任何外键依赖 InnoDB 隐式建索引**。
+3. **在 V1 之后新增迁移**：从 `V2` 起连续编号，推荐 `V2` 身份与配置、`V3` 实验与执行、`V4` 评测批次、批次 Run 登记与结果、`V5` 人工与导入、`V6` 可靠性辅助、`V7` 补循环外键。不修改 V1，不关闭 `foreign_key_checks` 掩盖依赖，不用 `repair` 掩盖半完成变更。
+4. 建持久化 Entity 与 Mapper：JSON 用 `JsonNode`，UTC 用 `Instant`，CHAR(26) 用 ULID TypeHandler；不返回 Entity 作为 API DTO；Mapper 只开放本任务所需基础读写。`evaluation_batch_runs` 是复合主键，按 `(batchId, runId)` 提供读写，**不要**为了统一而给它补 `id` 列。
 5. 领域枚举：生命周期、模式、Runner、技术状态、业务结果、Verdict、来源、导入/标注动作，以及 **BatchStatus、BatchTriggerType**；状态转换按 06 文档实现为可测试纯规则。
 6. 扩展公共组件（§3），补 `PageResponse` 与 OpenAPI 公共 Schema。
 7. 配置 Maven 测试分层（§6）与 CI（§7）。
@@ -97,8 +102,13 @@ TASK-001 已存在，直接复用，不得重建：
 | 重复 eventId；同 Job 两个最终 Result | UNIQUE 拒绝 |
 | 同批次同 Run 同 planItem 重复 Job | UNIQUE 拒绝 |
 | 同 Run 在**不同批次**各建一个 Job | 允许 |
+| 同批次重复登记同一 Run | 主键 `(batch_id, run_id)` 拒绝 |
+| Job 的 Run 未登记在本批次 | 复合外键 `(batch_id, run_id)` 拒绝 |
+| 跨实验把 Run 登记进批次 | 复合外键拒绝（登记表 `experiment_id` 必须同时满足两条父外键） |
 | Job 引用不属于本批次方案版本的 planItem | 复合外键拒绝 |
-| `parent_batch_id` 指向其他实验的批次 | 服务层拒绝（数据库仅保证存在） |
+| `parent_batch_id` 指向其他实验的批次 | 复合外键 `(parent_batch_id, experiment_id)` 拒绝；指向不存在批次同样拒绝 |
+| 每个外键在 `information_schema.STATISTICS` 中都有显式左前缀索引 | 逐表比对通过；无设计外的隐式索引 |
+| 复合外键含可空列（`active_attempt_id`、`accepted_attempt_id`、`run_attempt_id`、`evaluation_job_id`、`parent_batch_id`） | 字典中标记 `optional` 并说明语义；非空时仍必须命中父行 |
 | Trace 引用不存在 Run 或其他 Run 的 Attempt | 外键拒绝 |
 | Run 引用其他 Experiment 的 Target | 复合外键拒绝 |
 | Result 引用不存在 Job 或其他 Job 的 Attempt | 外键拒绝 |
@@ -151,9 +161,9 @@ Agent/数据集/方案 CRUD、在线业务、导入业务、Runner/Judge、标�
 
 ## 9. 验收
 
-- 27 表及全部设计约束落实；迁移在空真实 MySQL 与 CI 中均可执行。
-- 交付报告列出**实际 DDL 的全部索引**，包含 InnoDB 为 18 处外键自动创建的索引；不得声称设计文档已显式声明全部索引。
-- `evaluation_batches` 与 Job 的复合外键真实生效；同 Run 跨批次重评路径在数据库层可表达。
+- 28 表及全部设计约束落实；迁移在空真实 MySQL 与 CI 中均可执行。
+- 交付报告列出**实际 DDL 的全部索引**，并与字典逐表比对：每条外键都有显式左前缀索引，实际索引数等于设计声明数，**没有 InnoDB 隐式创建的索引**。字典当前声明 28 个主键、31 个额外 UNIQUE、46 个二级索引、47 条外键（以导出结果为准）。
+- `evaluation_batches`、`evaluation_batch_runs` 与 Job 的复合外键真实生效；同 Run 跨批次重评路径在数据库层可表达；跨实验批次/Run 组合被拒绝。
 - 持久化 JSON/UTC/ULID 映射通过。
 - 公共组件复用而非重建；契约冻结项未被改动。
 - `./mvnw verify` 真正执行 `*IT`；`pytest`、`npm run build`、`verify_design.py` 通过。
@@ -162,10 +172,17 @@ Agent/数据集/方案 CRUD、在线业务、导入业务、Runner/Judge、标�
 
 若环境仍不能运行 Docker 且 CI 也未能触发，仍可完成静态代码与单测，但结论必须标 **"数据库验收未完成"**，不得用 H2 或 SQLite 替代。若已有业务表与设计冲突，先列最小前向迁移方案，重大跨模块变化等待负责人决定，同时继续不受影响的工作。
 
-## 10. 待负责人确认（开工前一句话即可）
+## 10. 已裁决事项（V1.2，无需再确认）
 
-1. **离线 Run 是否允许不关联 DatasetCase**：当前设计为**必填**（`docs/modules/offline-evaluation.md` 明确 V1 不支持游离 Run），理由是 Run 唯一键与报告配对都依赖它。若要求支持"无样本归属的历史日志"，需先改 `database-schema.json`（增加 `case_ref` 与生成列唯一键），属跨模块变更，**不得由实施方自行放宽**。
-2. 其余契约已冻结，无需再确认。
+| 事项 | 裁决 |
+| --- | --- |
+| 离线 Run 是否必须关联 DatasetCase | **必须**。V1 不支持游离 Run；导入可在 `DATASET_CASES` 阶段向草稿版本自动生成样本，但不得伪造标准答案、工具轨迹或成功状态 |
+| 是否引入批次 Run 关联表 | **引入** `evaluation_batch_runs`，固定每次评测的 Run 集合 |
+| 是否允许跨 Experiment 关联 Run | **不允许**，由两条复合外键强制 |
+| 报告未传 batchId 的默认语义 | **固定返回初始批次**；最新评测必须显式 `batchScope=LATEST` |
+| 外键索引 | 全部显式声明，禁止依赖 InnoDB 隐式索引，最终 DDL 与字典逐表比对 |
+| 公共组件与 API 信封 | 不改结构，只做枚举值收敛与必要扩展 |
+| 实施授权 | **未授权前不编码**；完成后等待下一轮授权 |
 
 ## 11. 交付报告
 

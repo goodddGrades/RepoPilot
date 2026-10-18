@@ -1,7 +1,8 @@
 # 与原 TASK-002 草案的差异及待本地对齐事项
 
 > 历史记录：本报告描述设计包 V1.0 的原始决定（26 表）。2026-10-18 已引入 `evaluation_batches`
-> 解决"重评历史 Run"无法表达的问题，表数为 27；差异与裁决见 [task-002-revision.md](./task-002-revision.md)。
+> 解决"重评历史 Run"无法表达的问题，表数为 27；随后 V1.2 增 `evaluation_batch_runs`，**表数为 28**。
+> 差异与裁决见 [task-002-revision.md](./task-002-revision.md)、[task-002-freeze.md](./task-002-freeze.md)。
 
 本报告对照的是本轮对话中用户提供的TASK-002文本，未读取本地仓库，不能声称已有代码有以下缺陷。V1.0选择如下规则供项目负责人审核；本地已有实现时做前向差异迁移，不推翻成果。
 

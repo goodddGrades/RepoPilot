@@ -45,17 +45,30 @@ def date_time(value):
         return False
     return datetime.fromisoformat(value.replace('Z', '+00:00')).tzinfo is not None
 
+# 关联表以业务键作复合主键：它没有独立生命周期，ULID 代理键只会多一份索引。
+# 其余业务表一律 ULID 单列主键。
+ASSOCIATION_PK = {'evaluation_batch_runs': ['batch_id', 'run_id']}
+
 def main():
     global checks
     tables = load('docs/contracts/database-schema.json')['tables']
-    check(len(tables)==27, 'table count')
+    check(len(tables)==28, 'table count')
     for name,t in tables.items():
         columns = {c['name']:c for c in t['columns']}
         check(len(columns)==len(t['columns']), 'duplicate column: '+name)
-        check(t['primary_key']==['id'], 'primary key: '+name)
-        check(columns['id']['type']=='CHAR(26)' and not columns['id']['nullable'], 'ULID: '+name)
+        check(len(t['primary_key'])==len(set(t['primary_key'])), 'primary key repeats column: '+name)
+        if name in ASSOCIATION_PK:
+            check(t['primary_key']==ASSOCIATION_PK[name], 'association primary key: '+name)
+            check(all(not columns[c]['nullable'] for c in t['primary_key']), 'association pk nullable: '+name)
+        else:
+            check(t['primary_key']==['id'], 'primary key: '+name)
+            check(columns['id']['type']=='CHAR(26)' and not columns['id']['nullable'], 'ULID: '+name)
         for key in t['unique_keys']+t['indexes']+[t['primary_key']]:
             check(all(c in columns for c in key), 'key column: '+name)
+        # 同一列组合不得既是多条 UNIQUE 又重复声明为普通索引；与主键相同的前缀索引也视为冗余
+        declared = [tuple(k) for k in t['unique_keys']+t['indexes']]
+        check(len(declared)==len(set(declared)), 'duplicate key declaration: '+name)
+        check(tuple(t['primary_key']) not in declared, 'index duplicates primary key: '+name)
         for fk in t['foreign_keys']:
             parent = tables[fk['references_table']]
             pcols = {c['name']:c for c in parent['columns']}
@@ -64,10 +77,34 @@ def main():
             for c,pc in zip(fk['columns'],fk['references_columns']):
                 check(c in columns and pc in pcols, 'FK columns: '+name)
                 check(columns[c]['type']==pcols[pc]['type'], 'FK type: '+name)
+                check(not pcols[pc]['nullable'], 'FK parent key nullable: '+name+'.'+pc)
             check(fk['on_delete']=='RESTRICT', 'FK deletion: '+name)
+            # 每条外键必须有显式声明的左前缀索引，禁止依赖 InnoDB 隐式建索引
+            check(any(k[:len(fk['columns'])]==fk['columns'] for k in [t['primary_key']]+t['unique_keys']+t['indexes']),
+                  'FK prefix index missing: '+name+' '+str(fk['columns']))
+            # 复合外键中任一列可空会让 MATCH SIMPLE 跳过整条校验，必须显式登记为可选关系
+            if len(fk['columns'])>1:
+                nullable=[c for c in fk['columns'] if columns[c]['nullable']]
+                check(bool(nullable)==bool(fk.get('optional')),
+                      'composite FK optional flag mismatch: '+name+' '+str(fk['columns']))
+                if nullable:
+                    check(bool(fk.get('optional_reason')), 'optional FK reason missing: '+name)
         for expression in t['checks']:
             words=set(re.findall(r'[A-Za-z_][A-Za-z0-9_]*',re.sub(r"'[^']*'",'',expression)))
             check(words <= set(columns)|{'IS','NULL','NOT','OR','AND','IN'}, 'CHECK references: '+name+' '+expression)
+
+    # 批次语义必须在数据库层闭合：Run 集合固定、且批次与 Run 同实验
+    batch_runs = tables['evaluation_batch_runs']
+    check([c['name'] for c in batch_runs['columns']]==['batch_id','run_id','experiment_id','created_at'], 'batch_runs columns')
+    for fk in batch_runs['foreign_keys']:
+        check('experiment_id' in fk['columns'] and 'experiment_id' in fk['references_columns'],
+              'batch_runs same experiment: '+str(fk['columns']))
+    check(any(f['columns']==['batch_id','run_id'] and f['references_table']=='evaluation_batch_runs'
+              for f in tables['evaluation_jobs']['foreign_keys']), 'job must reference batch run set')
+    check(['id','experiment_id'] in tables['evaluation_batches']['unique_keys'], 'batch composite key')
+    check(['id','experiment_id'] in tables['evaluation_runs']['unique_keys'], 'run composite key')
+    check(any(f['columns']==['parent_batch_id','experiment_id'] and f['references_table']=='evaluation_batches'
+              for f in tables['evaluation_batches']['foreign_keys']), 'parent batch must stay in experiment')
 
     validators={}
     for path in sorted((ROOT/'docs/contracts').glob('*.schema.json')):
@@ -122,6 +159,9 @@ def main():
         check('## '+name+'\n' in dbtext, 'dictionary table missing: '+name)
         for c in t['columns']:
             check('| '+c['name']+' | '+c['type']+' |' in dbtext, 'dictionary column missing')
+    # 报告默认语义必须写死在契约里，不能随后台重评漂移
+    api=(ROOT/'docs/architecture/04-api-contract.md').read_text()
+    check('batchScope' in api and '默认返回初始批次' in api, 'report default batch semantics')
 
     print(json.dumps({'status':'PASS','checks':checks,'tables':len(tables),'json_schemas':len(validators),'positive_samples':len(samples),'negative_samples':len(negative),'scope':'设计文件静态检查；不代表MySQL迁移或应用验收'},ensure_ascii=False,indent=2))
 

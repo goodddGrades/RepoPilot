@@ -1,6 +1,6 @@
 # 数据库详细设计
 
-唯一字段来源为 [database-schema.json](../contracts/database-schema.json)。本文件由它生成，用于审阅；修改时同步两者。共 27 张表。没有在云端生成或执行真实 Flyway migration；本地 TASK-002 需按已有版本号实施。
+唯一字段来源为 [database-schema.json](../contracts/database-schema.json)。本文件由它生成，用于审阅；修改时同步两者。共 28 张表（其中 `evaluation_batch_runs` 是纯关联表，用业务键作复合主键）。没有在云端生成或执行真实 Flyway migration；本地 TASK-002 需按已有版本号实施。
 
 ## 统一规范
 
@@ -10,17 +10,27 @@ MySQL 8，InnoDB，utf8mb4_bin；ULID列用CHAR(26)/ascii_bin，统一大写且�
 
 所有外键RESTRICT，无级联删除。普通多态资源引用不能伪造外键。在线/离线模式、跨版本归属、Artifact属于同Run等跨行规则由Java事务校验，见领域文档。
 
+主键约定：业务表一律 `id CHAR(26)`（ULID）。唯一的例外是纯关联表 `evaluation_batch_runs`，它没有独立生命周期，使用 `(batch_id, run_id)` 复合主键；若加 ULID 代理键只会多一份宽索引而不增加约束力。
+
 ## 建表与迁移顺序
 
-先建身份/版本/方案，再建Experiment/Target，接着创建Run、Attempt、Artifact、Trace、评测批次、Job及其Attempt、Result、Annotation、Import、Outbox/Inbox/API幂等表。Run与Attempt互引、Run与Artifact及Import互引，Job与JobAttempt互引；先创建所有表，再用ALTER TABLE添加循环外键；不能禁用foreign_key_checks掩盖依赖。复合外键的被引用列均有对应UNIQUE。
+先建身份/版本/方案，再建Experiment/Target，接着创建Run、Attempt、Artifact、Trace、评测批次、批次Run登记、Job及其Attempt、Result、Annotation、Import、Outbox/Inbox/API幂等表。Run与Attempt互引、Run与Artifact及Import互引，Job与JobAttempt互引；先创建所有表，再用ALTER TABLE添加循环外键；不能禁用foreign_key_checks掩盖依赖。复合外键的被引用列均有对应UNIQUE（含 `evaluation_batches(id, experiment_id)`、`evaluation_runs(id, experiment_id)`、`evaluation_plan_items(plan_version_id, id)`）。
 
 评测批次必须早于 Job 创建：Job 的 `(batch_id, evaluation_plan_version_id)` 指向批次，`(evaluation_plan_version_id, evaluation_plan_item_id)` 指向方案项，因此在数据库层就拒绝"Job 使用不属于本批次方案版本的算子项"。
+
+`evaluation_batch_runs` 必须早于 Job：Job 的 `(batch_id, run_id)` 指向这张登记表，因此"Job 评测了一个没被登记进本批次的 Run"在数据库层就被拒绝。批次创建与 Run 登记在同一事务提交，之后不得增删——否则历史批次的样本范围会漂移。
 
 按仓库已有Flyway最大版本连续编号，推荐拆分身份配置、实验执行、轨迹与评测批次、人工与导入、可靠性辅助五组；最后一组补循环外键。新项目可把全部建表和最后补外键放在同一个按依赖排序的迁移集合。每个阶段完成后保证Flyway状态可验证，不能改写已执行迁移。
 
 ## 字段、约束与索引
 
-以下PK均为id。每个外键列应有索引；InnoDB自动建立的外键索引也要在最终DDL检查中记录。明确索引不等于已验证性能，TASK-012依据执行计划调整。
+以下PK均为id（`evaluation_batch_runs` 除外，见上）。索引分三类，声明时必须能说明属于哪一类：
+
+1. **约束键**：主键与 UNIQUE，表达业务唯一性（如 `(experiment_id, batch_no)`、`(batch_id, run_id, evaluation_plan_item_id)`）；复合外键的被引用列必须有对应 UNIQUE。
+2. **外键前缀索引**：每条外键都要有以约束列序列为左前缀的索引。本字典已逐条显式声明，**不依赖 InnoDB 隐式建索引**；TASK-002 必须用真实 DDL 验证"设计声明的索引 == 实际创建的索引"，不允许出现无法从字典追溯的索引。
+3. **查询索引**：按已知读取路径追加（如 `(status, next_retry_at, created_at, id)`）。
+
+三条去重规则：已由 UNIQUE/PK 以左前缀覆盖的列组合不再重复建索引；同一列组合不得既声明为 UNIQUE 又声明为普通索引；两条复合外键若索引列相同则合并为一条。当前字典中仅有 7 处索引与主键/唯一键同前缀（如 `evaluation_runs(id, active_attempt_id)`），都是复合外键无法并入主键导致的，已在各表说明原因。明确索引不等于已验证性能，TASK-012依据执行计划调整。
 
 ## agents
 
@@ -222,7 +232,7 @@ CHECK：`version >= 1`；`status IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')`。
 
 唯一约束：(plan_version_id, id)（供 Job 复合外键引用）；(plan_version_id, evaluator_definition_id)；(plan_version_id, execution_order)。
 
-查询索引：无额外查询索引。
+查询索引：(evaluator_definition_id)（外键前缀索引）。
 
 CHECK：`execution_order >= 1`。
 
@@ -252,7 +262,7 @@ CHECK：`execution_order >= 1`。
 
 唯一约束：除PK外无。
 
-查询索引：(status, created_at, id)。
+查询索引：(status, created_at, id)；(dataset_version_id)；(evaluation_plan_version_id)。后两条为外键前缀索引，显式声明以替代 InnoDB 隐式建索引。
 
 CHECK：`expected_run_count >= 0`；`mode IN ('ONLINE', 'OFFLINE')`；`status IN ('DRAFT', 'QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED')`。
 
@@ -277,7 +287,7 @@ CHECK：`expected_run_count >= 0`；`mode IN ('ONLINE', 'OFFLINE')`；`status IN
 
 唯一约束：(experiment_id, target_key)；(experiment_id, id)。
 
-查询索引：无额外查询索引。
+查询索引：(agent_version_id)。`experiment_id` 已由唯一键 `(experiment_id, target_key)` 覆盖，不再重复建索引。
 
 CHECK：`repeat_count >= 1`。
 
@@ -319,9 +329,9 @@ CHECK：`repeat_count >= 1`。
 | created_at | DATETIME(3) | 否 | - | UTC创建时间 |
 | updated_at | DATETIME(3) | 否 | - | UTC更新时间 |
 
-唯一约束：(experiment_target_id, dataset_case_id, repeat_index)；(experiment_id, experiment_target_id, source_system, source_record_id)。
+唯一约束：(experiment_target_id, dataset_case_id, repeat_index)；(experiment_id, experiment_target_id, source_system, source_record_id)；(id, experiment_id)（供批次登记表复合外键引用，用于强制 Run 与批次同实验）。
 
-查询索引：(experiment_id, status)；(status, next_retry_at, created_at, id)；(dataset_case_id)；(created_at, id)；(trace_id)。
+查询索引：(experiment_id, status)；(status, next_retry_at, created_at, id)；(dataset_case_id)；(created_at, id)；(trace_id)；(id, active_attempt_id)；(id, accepted_attempt_id)；(output_artifact_id)；(import_batch_id)。`(id, active_attempt_id)` 与 `(id, accepted_attempt_id)` 只是两条复合外键的前缀索引，无法并入主键，且各自守护不同不变量（当前尝试 / 已接受尝试），不合并。
 
 CHECK：`repeat_index >= 1`；`attempt_count >= 0`；`(source_system IS NULL) = (source_record_id IS NULL)`；`NOT (output_json IS NOT NULL AND output_artifact_id IS NOT NULL)`；`mode IN ('ONLINE', 'OFFLINE')`；`task_outcome IN ('UNKNOWN', 'SUCCESS', 'FAILURE', 'NOT_APPLICABLE')`；`status IN ('PENDING', 'QUEUED', 'RUNNING', 'EVALUATING', 'COMPLETED', 'FAILED', 'TIMED_OUT', 'CANCELLED')`。
 
@@ -331,9 +341,9 @@ CHECK：`repeat_index >= 1`；`attempt_count >= 0`；`(source_system IS NULL) = 
 
 外键：(dataset_case_id) → dataset_cases(id)；RESTRICT。
 
-外键：(id, active_attempt_id) → run_attempts(run_id, id)；RESTRICT。
+外键：(id, active_attempt_id) → run_attempts(run_id, id)；RESTRICT。可空列，勾选 optional：NULL 表示当前没有进行中的尝试，非空时必须属于本 Run。
 
-外键：(id, accepted_attempt_id) → run_attempts(run_id, id)；RESTRICT。
+外键：(id, accepted_attempt_id) → run_attempts(run_id, id)；RESTRICT。可空列，勾选 optional：离线 Run 与未封口 Run 没有接受尝试。
 
 外键：(output_artifact_id) → artifacts(id)；RESTRICT。
 
@@ -366,7 +376,7 @@ CHECK：`repeat_index >= 1`；`attempt_count >= 0`；`(source_system IS NULL) = 
 
 唯一约束：(run_id, attempt_no)；(run_id, id)。
 
-查询索引：(status, lease_until)。
+查询索引：(status, lease_until)；(output_artifact_id)（外键前缀索引）。
 
 CHECK：`attempt_no >= 1`；`status IN ('RUNNING', 'COMPLETED', 'FAILED', 'TIMED_OUT', 'CANCELLED')`。
 
@@ -423,19 +433,19 @@ CHECK：`size_bytes >= 0`；`status IN ('READY', 'DELETED')`。
 
 唯一约束：(event_id)。
 
-查询索引：(run_id, occurred_at, id)；(trace_id)；(run_id, event_type)；(run_attempt_id, sequence_no, id)。
+查询索引：(run_id, occurred_at, id)；(trace_id)；(run_id, event_type)；(run_attempt_id, sequence_no, id)；(run_id, run_attempt_id)；(artifact_id)。第四条按尝试读轨迹；`(run_id, run_attempt_id)` 与 `(artifact_id)` 是外键前缀索引。
 
 CHECK：`sequence_no IS NULL OR sequence_no >= 0`。
 
 外键：(run_id) → evaluation_runs(id)；RESTRICT。
 
-外键：(run_id, run_attempt_id) → run_attempts(run_id, id)；RESTRICT。
+外键：(run_id, run_attempt_id) → run_attempts(run_id, id)；RESTRICT。可空列，勾选 optional：离线轨迹没有执行尝试。
 
 外键：(artifact_id) → artifacts(id)；RESTRICT。
 
 ## evaluation_batches
 
-一次对待评测 Run 集合按固定方案版本的批量评测；重评创建新批次。
+一次对待评测 Run 集合按固定方案版本的批量评测；Run 集合由 `evaluation_batch_runs` 固定，重评创建新批次。
 
 | 字段 | 类型 | 可空 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -454,9 +464,9 @@ CHECK：`sequence_no IS NULL OR sequence_no >= 0`。
 | created_at | DATETIME(3) | 否 | - | UTC创建时间 |
 | updated_at | DATETIME(3) | 否 | - | UTC更新时间 |
 
-唯一约束：(experiment_id, batch_no)；(id, evaluation_plan_version_id)（供 Job 复合外键引用）。
+唯一约束：(experiment_id, batch_no)；(id, evaluation_plan_version_id)（供 Job 复合外键引用）；(id, experiment_id)（供批次登记表与父批次复合外键引用，用于强制同实验）。
 
-查询索引：(experiment_id, status, created_at)；(status, created_at, id)；(evaluation_plan_version_id)；(parent_batch_id)。后两条同时作为外键索引显式声明，不依赖 InnoDB 隐式创建。
+查询索引：(experiment_id, status, created_at)；(status, created_at, id)；(evaluation_plan_version_id)；(parent_batch_id, experiment_id)。后两条为外键前缀索引，显式声明，不依赖 InnoDB 隐式创建；`experiment_id` 已由唯一键覆盖，不再重复建索引。
 
 CHECK：`batch_no >= 1`；`expected_job_count >= 0`；`trigger_type IN ('INITIAL', 'REEVALUATION', 'MANUAL')`；`status IN ('PENDING', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED')`。
 
@@ -464,7 +474,32 @@ CHECK：`batch_no >= 1`；`expected_job_count >= 0`；`trigger_type IN ('INITIAL
 
 外键：(evaluation_plan_version_id) → evaluation_plan_versions(id)；RESTRICT。
 
-外键：(parent_batch_id) → evaluation_batches(id)；RESTRICT。
+外键：(parent_batch_id, experiment_id) → evaluation_batches(id, experiment_id)；RESTRICT。可空列，勾选 optional：初始批次没有父批次；非空时父批次必须属于同一实验，跨实验的重评来源在数据库层被拒绝。
+
+## evaluation_batch_runs
+
+一个批次固定登记的 Run 集合；批次的样本范围在写入时就落库，而不是查询时按条件动态选择。
+
+| 字段 | 类型 | 可空 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| batch_id | CHAR(26) | 否 | - | 评测批次（与 run_id 组成主键） |
+| run_id | CHAR(26) | 否 | - | 参与该批次的 Run |
+| experiment_id | CHAR(26) | 否 | - | 冗余自批次与 Run，供两条复合外键强制同实验 |
+| created_at | DATETIME(3) | 否 | - | 加入时间 |
+
+主键：(batch_id, run_id)。关联表没有独立生命周期，使用业务键作复合主键；ULID 代理键只会多一份宽索引，不引入。同一批次重复登记同一 Run 由主键拒绝。
+
+唯一约束：除PK外无。
+
+查询索引：(batch_id, experiment_id)；(run_id, experiment_id)。前者是"批次内 Run 列表"的读取路径并支撑指向批次的外键；后者反查"某 Run 参与过哪些批次"并支撑指向 Run 的外键。
+
+CHECK：无额外CHECK。
+
+外键：(batch_id, experiment_id) → evaluation_batches(id, experiment_id)；RESTRICT。
+
+外键：(run_id, experiment_id) → evaluation_runs(id, experiment_id)；RESTRICT。
+
+两条复合外键共用 `experiment_id` 列，因此"批次属于实验 A、Run 属于实验 B"的组合无法成立：要同时满足两条外键，`experiment_id` 必须既等于批次的实验又等于 Run 的实验。`experiment_id` 本身不再单独建指向 `experiments` 的外键，其一致性由两条父外键传递保证。
 
 ## evaluation_jobs
 
@@ -491,19 +526,21 @@ CHECK：`batch_no >= 1`；`expected_job_count >= 0`；`trigger_type IN ('INITIAL
 
 唯一约束：(batch_id, run_id, evaluation_plan_item_id)；(run_id, id)。
 
-查询索引：(status, next_retry_at, created_at, id)；(batch_id, evaluation_plan_version_id)；(evaluation_plan_version_id, evaluation_plan_item_id)。后两条分别是两条复合外键所需的前缀索引，避免 InnoDB 隐式建索引后无法从设计文档追溯。
+查询索引：(status, next_retry_at, created_at, id)；(batch_id, evaluation_plan_version_id)；(evaluation_plan_version_id, evaluation_plan_item_id)；(id, active_attempt_id)。中间两条分别是复合外键所需的前缀索引；`(batch_id, run_id)` 无需再建索引，已由唯一键 `(batch_id, run_id, evaluation_plan_item_id)` 以左前缀覆盖。
 
 CHECK：`attempt_count >= 0`；`status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'SKIPPED')`。
 
-外键：(run_id) → evaluation_runs(id)；RESTRICT。
+外键：(run_id) → evaluation_runs(id)；RESTRICT。单列外键只证明 Run 存在。
 
-外键：(batch_id) → evaluation_batches(id)；RESTRICT。
+外键：(batch_id) → evaluation_batches(id)；RESTRICT。单列外键只证明批次存在。
+
+外键：(batch_id, run_id) → evaluation_batch_runs(batch_id, run_id)；RESTRICT。这条才是语义约束：Job 的 Run 必须已被登记进本批次。它与上面两条单列外键不重复——两条单列外键各自成立时，Run 仍可能属于别的批次。
 
 外键：(batch_id, evaluation_plan_version_id) → evaluation_batches(id, evaluation_plan_version_id)；RESTRICT。
 
 外键：(evaluation_plan_version_id, evaluation_plan_item_id) → evaluation_plan_items(plan_version_id, id)；RESTRICT。
 
-外键：(id, active_attempt_id) → evaluation_job_attempts(job_id, id)；RESTRICT。
+外键：(id, active_attempt_id) → evaluation_job_attempts(job_id, id)；RESTRICT。可空列，勾选 optional：Job 空闲时没有当前尝试。
 
 ## evaluation_job_attempts
 
@@ -556,7 +593,7 @@ CHECK：`attempt_no >= 1`；`status IN ('RUNNING', 'COMPLETED', 'FAILED', 'TIMED
 
 唯一约束：(job_id)。
 
-查询索引：无额外查询索引。
+查询索引：(job_id, job_attempt_id)。唯一键 `(job_id)` 约束"每 Job 一条最终结果"，这条前缀索引支撑"结果必须来自本 Job 的尝试"的复合外键，两者职责不同，都保留。
 
 CHECK：`score IS NULL OR (score >= 0 AND score <= 1)`；`verdict IN ('PASS', 'FAIL', 'INDETERMINATE', 'NOT_APPLICABLE')`；`generated_by IN ('RULE', 'TEST', 'LLM', 'MOCK')`。
 
@@ -584,13 +621,13 @@ CHECK：`score IS NULL OR (score >= 0 AND score <= 1)`；`verdict IN ('PASS', 'F
 
 唯一约束：除PK外无。
 
-查询索引：(status, created_at, id)；(run_id)。
+查询索引：(status, created_at, id)；(run_id, evaluation_job_id)。`(run_id)` 不再单独声明：它是 `(run_id, evaluation_job_id)` 的左前缀，已被覆盖。
 
 CHECK：`version >= 0`；`status IN ('PENDING', 'CLAIMED', 'SUBMITTED', 'REVIEWED', 'RETURNED', 'CANCELLED')`。
 
 外键：(run_id) → evaluation_runs(id)；RESTRICT。
 
-外键：(run_id, evaluation_job_id) → evaluation_jobs(run_id, id)；RESTRICT。
+外键：(run_id, evaluation_job_id) → evaluation_jobs(run_id, id)；RESTRICT。可空列，勾选 optional：Run 级标注不绑定具体 Job。
 
 ## annotation_records
 
@@ -640,7 +677,7 @@ CHECK：`action IN ('CLAIM', 'SUBMIT', 'REVIEW', 'RETURN', 'CANCEL')`；`verdict
 
 唯一约束：除PK外无。
 
-查询索引：(experiment_id, status)；(status, created_at, id)。
+查询索引：(experiment_id, status)；(status, created_at, id)；(dataset_version_id)；(file_artifact_id)。后两条为外键前缀索引。
 
 CHECK：`total_count >= 0`；`success_count >= 0`；`failed_count >= 0`；`duplicate_count >= 0`；`duplicate_count <= success_count`；`last_line_no >= 0`；`import_type IN ('DATASET_CASES', 'OFFLINE_RUNS')`；`status IN ('PENDING', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED')`。
 
@@ -667,7 +704,7 @@ CHECK：`total_count >= 0`；`success_count >= 0`；`failed_count >= 0`；`dupli
 
 唯一约束：(batch_id, line_no)。
 
-查询索引：无额外查询索引。
+查询索引：(dataset_case_id)；(run_id)。均为外键前缀索引；`batch_id` 已由唯一键 `(batch_id, line_no)` 覆盖。
 
 CHECK：`line_no >= 1`；`status IN ('IMPORTED', 'REUSED', 'REJECTED')`。
 
@@ -777,8 +814,10 @@ CHECK：无额外CHECK。
 
 `evaluation_jobs` 的 `batch_id` 与 `evaluation_plan_version_id` 是业务写入时由服务层从批次复制的一次性快照，不允许后续更新；数据库中通过两条复合外键保证三者一致。
 
+`evaluation_batch_runs.experiment_id` 同理是从批次复制的快照列，存在的唯一目的是把"批次与 Run 同实验"变成两条单条外键即可检查的条件；它不单独建指向 `experiments` 的外键，避免多一条同义索引。
+
 Mapper只提供当前任务所需的基础读写，不一次性开放任意状态更新。后续领取和完成必须采用条件更新并检查影响行数，或锁行后变更。Entity不作为API响应。
 
 ## 必须在真实MySQL验证
 
-空库迁移、重复版本/样本/Run槽位/Attempt/eventId/Job最终结果、非法外键、非法score与状态、nullable离线AgentVersion、同Case不同Target/重复编号多个Run、UTC与JSON往返。评测批次另外验证：同批次同 Run 同方案项重复 Job 被拒绝；同 Run 在不同批次可各有一个 Job；Job 引用不属于本批次方案版本的 planItem 被复合外键拒绝；`parent_batch_id` 只能指向同实验的既有批次（服务层校验）；批次方案版本与选择范围不可更新。检查所有复合外键真实生效。服务层测试另外覆盖在线AgentVersion必填、跨实验Case归属和发布不可变；不能把服务规则说成数据库CHECK已完成。
+空库迁移、重复版本/样本/Run槽位/Attempt/eventId/Job最终结果、非法外键、非法score与状态、nullable离线AgentVersion、同Case不同Target/重复编号多个Run、UTC与JSON往返。评测批次另外验证：同批次同 Run 同方案项重复 Job 被拒绝；同 Run 在不同批次可各有一个 Job；Job 引用不属于本批次方案版本的 planItem 被复合外键拒绝；`parent_batch_id` 指向其他实验的批次被复合外键拒绝；跨实验 Run 登记进批次被复合外键拒绝；Job 引用未登记在本批次的 Run 被复合外键拒绝；同批次重复登记同一 Run 被主键拒绝；批次方案版本与选择范围不可更新。索引验收：导出 `information_schema.STATISTICS` 与设计字典逐表比对，确认每条外键都有显式左前缀索引、无多余隐式索引。检查所有复合外键真实生效。服务层测试另外覆盖在线AgentVersion必填、跨实验Case归属和发布不可变；不能把服务规则说成数据库CHECK已完成。

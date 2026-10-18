@@ -72,9 +72,12 @@ V1算子定义通过经版本控制的注册清单和种子导入维护，不提
 | POST /experiments/{id}/evaluation-batches | planVersionId,triggerType,parentBatchId?,runIds? 或 filter?；创建后202 | EvaluationBatch |
 | GET /experiments/{id}/evaluation-batches | status?,分页 | 批次页，含batchNo、triggerType、计数 |
 | GET /evaluation-batches/{id} | 详情 | 批次、固定方案版本、选择范围、Job计数与状态 |
+| GET /evaluation-batches/{id}/runs | page,pageSize | 页；该批次固定登记的 Run 列表，只读 |
 | POST /evaluation-batches/{id}/cancel | reason? | {id,status}，202 |
 
 实验启动时自动创建 `triggerType=INITIAL` 的批次，并由它产生首批 Job。重评必须通过 `POST /experiments/{id}/evaluation-batches` 新建批次：后端只允许已封口的 Run 进入选择范围，复用原 accepted Attempt 与 Trace，**禁止触发新的 Agent 执行**。同一 Run 可在多个批次出现；同一批次内 `(runId, planItemId)` 唯一。批次创建后其 planVersionId 与 selection 不可修改。
+
+`runIds` 或 `filter` 在创建时一次性解析为具体 Run 列表，写入 `evaluation_batch_runs`；后续查询批次范围只读这张登记表，不再重新执行过滤条件。`selection_json` 只保存"当初为什么选这些 Run"的依据与排除原因，不是范围真相。批次创建事务同时写批次行、Run 登记行与 `expectedJobCount`；三者任一写入失败则整批回滚。Job 只能针对已登记的 Run 创建，跨实验的 Run 由复合外键拒绝。
 
 Experiment创建时只建立草稿与Targets；开始事务固定expectedRunCount、预算快照与对象不可变配置。在线生成全部Run；离线冻结已导入Run清单并禁止后续导入，缺失槽位记录为报告缺失。大实验生成可分批，但V1上限10000个Run，TASK-004先用单事务完整生成并验证上限；不能在部分Run生成时开始执行。
 
@@ -103,10 +106,17 @@ Trace游标使用(created_at? 不使用) **(occurred_at,id)** 升序，cursor编
 | POST /annotation-tasks/{id}/submit | expectedVersion,verdict,failureCategory?,reason,evidence → Task |
 | POST /annotation-tasks/{id}/review | expectedVersion,approved,reason → Task；false对应RETURN |
 | POST /annotation-tasks/{id}/cancel | expectedVersion,reason → Task |
-| GET /experiments/{id}/report | annotationView=RAW或REVIEWED,batchId? → 指标、覆盖率、缺失、分组结果；响应必须回显实际使用的batchId |
-| GET /experiments/{id}/comparison | baselineTargetId,candidateTargetId,batchId? → 配对变化与不可比原因；两Target必须来自同一批次 |
+| GET /experiments/{id}/report | annotationView=RAW或REVIEWED,batchScope=INITIAL或LATEST或SPECIFIED(默认INITIAL),batchId? → 指标、覆盖率、缺失、分组结果；响应必须回显实际使用的batchId与batchScope |
+| GET /experiments/{id}/comparison | baselineTargetId,candidateTargetId,batchScope?,batchId?,baselineBatchId?,candidateBatchId? → 配对变化与不可比原因；单批次比较时两Target必须来自同一批次 |
 
-报告与对比的批次选择规则：显式 `batchId` 优先；未传时取该实验最近一个终态批次；无批次可返回时明确报错，不静默回退到其他实验或另一方案版本。跨批次比较（不同算子版本）不自动判定回归，只返回"不可比原因=方案版本不同"，由人决定是否做描述性对比。
+报告与对比的批次选择规则（**默认值固定，不随后台重评漂移**）：
+
+1. `batchScope=SPECIFIED`（或直接传 `batchId`）：使用指定批次；`SPECIFIED` 缺 `batchId` 返回 400。
+2. `batchScope=LATEST`：使用该实验**最新一个已完成**批次（`status=COMPLETED`，其次 `PARTIAL_FAILED`），用于"最新评测"入口。
+3. 不传任何批次参数：**默认返回初始批次**（`trigger_type=INITIAL`），而不是"最近一个批次"，避免同一 URL 在重评后返回不同历史结论。
+4. 响应必须回显 `batchId` 与 `batchScope`，前端据此标注"初始评测 / 最新评测 / 指定批次"。实验没有初始批次时明确报错，不静默回退到其他批次或另一方案版本。
+
+5. `comparison` 跨批次比较（对比两版 Judge）必须同时给 `baselineBatchId` 与 `candidateBatchId`，只给一个返回 400。不同方案版本的跨批次比较不自动判定回归，只返回"不可比原因=方案版本不同"，由人决定是否做描述性对比。
 
 operator从可信认证上下文取得；开发模式固定测试身份可配置，只绑定本机，不把浏览器任意operatorId当成已鉴权身份。V1同一操作者允许提交和审核，但在记录中标出selfReview=true；不能宣传为双人审核。
 

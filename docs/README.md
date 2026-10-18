@@ -7,10 +7,11 @@
 
 1. [`00-product-scope.md`](./00-product-scope.md) — 产品范围、V1 边界、交付阶段
 2. [`architecture/01-system-overview.md`](./architecture/01-system-overview.md) — 组件职责与调度分期
-3. [`reviews/task-002-revision.md`](./reviews/task-002-revision.md) — **TASK-002 修订：评测批次与契约收敛（最新）**
-4. [`reviews/task-002-delta.md`](./reviews/task-002-delta.md) — 相对早期草案的修订（为什么这样做）
-5. [`reviews/repository-alignment.md`](./reviews/repository-alignment.md) — 本仓库核对结果、实际版本与偏差
-6. [`reviews/design-merge-report.md`](./reviews/design-merge-report.md) — 设计包合并时的冲突清单与处置
+3. [`reviews/task-002-freeze.md`](./reviews/task-002-freeze.md) — **TASK-002 设计冻结 V1.2：批次 Run 集合、跨实验约束、报告默认语义、索引审计（最新）**
+4. [`reviews/task-002-revision.md`](./reviews/task-002-revision.md) — TASK-002 修订：评测批次与契约收敛
+5. [`reviews/task-002-delta.md`](./reviews/task-002-delta.md) — 相对早期草案的修订（为什么这样做）
+6. [`reviews/repository-alignment.md`](./reviews/repository-alignment.md) — 本仓库核对结果、实际版本与偏差
+7. [`reviews/design-merge-report.md`](./reviews/design-merge-report.md) — 设计包合并时的冲突清单与处置
 
 ## 全局架构
 
@@ -18,7 +19,7 @@
 | --- | --- |
 | [`architecture/01-system-overview.md`](./architecture/01-system-overview.md) | 技术边界、组件职责、工程组织、数据流、运维可见性 |
 | [`architecture/02-domain-model.md`](./architecture/02-domain-model.md) | 领域约束、版本不可变、样本身份、Attempt 归属 |
-| [`architecture/03-database-design.md`](./architecture/03-database-design.md) | 27 张表的生成视图（**唯一来源是 `contracts/database-schema.json`**） |
+| [`architecture/03-database-design.md`](./architecture/03-database-design.md) | 28 张表的生成视图（**唯一来源是 `contracts/database-schema.json`**） |
 | [`architecture/04-api-contract.md`](./architecture/04-api-contract.md) | `/api/v1`、`/internal/v1`、统一响应、错误码、分页、幂等、Worker 协议 |
 | [`architecture/05-event-contract.md`](./architecture/05-event-contract.md) | 事件信封与轨迹结构语义 |
 | [`architecture/06-reliability-design.md`](./architecture/06-reliability-design.md) | 状态机、租约、重试、封口、恢复 |

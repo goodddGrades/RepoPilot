@@ -6,17 +6,21 @@
 
 ## 1. 为什么必须修订
 
-原 TASK-002 的数据库字典在"重评历史 Run"这个核心场景上不可实现：
+原 TASK-002 把评测任务直接挂在 Run 上，唯一键为：
 
 ```text
 evaluation_jobs  UNIQUE (run_id, evaluation_plan_item_id)
 ```
 
-`evaluation_plan_item` 绑定的是一个**固定版本的算子**（`evaluator_definitions`）。升级 Judge 后必须使用新的 PlanVersion，也就是新的 plan item。而同一个 Run 在同一 plan item 下已有 Job，唯一键直接拒绝；想换方案又只能新建 Experiment，新 Experiment 又要新建 Run，而 Run 绑定了原 Experiment——**结果是：想重用原始 Trace 重评，只能重跑 Agent 或伪造新 Run**。这与"重新评测不应重新执行 Agent"直接冲突。
+**这条唯一键并不会阻止"换一版 Judge 再评一次"**：新方案会产生新的 plan item，ID 不同，唯一键照样放行。真正缺的是"批次"这个维度：同一 Run 的所有 Job 混在一起，无法表达**同一方案版本的独立重评**，无法标注**某条结果属于哪次评测**，无法在保留旧结果的同时产生新结果，也没有地方挂 `parent_batch_id` 去对比两版 Judge。
+
+> 2026-10-18 更正：本节最初写作"唯一键直接拒绝重评，只能重跑 Agent 或伪造新 Run"，该论证不准确，已按评审意见修正。引入批次的结论不变，但理由改为**批次归属与历史分组**，而非"绕过唯一键"。
 
 TASK-001 的实现没有涉及这部分，因此修订成本在文档与 TASK-002 内，不涉及回滚代码。
 
 ## 2. 设计变更：引入评测批次
+
+> 本节记录 V1.1 的修订。V1.2 在此基础上新增第 28 张表 `evaluation_batch_runs` 与跨实验约束，见 [task-002-freeze.md](./task-002-freeze.md)。
 
 新增第 27 张表 `evaluation_batches`：
 
@@ -47,7 +51,7 @@ TASK-001 的实现没有涉及这部分，因此修订成本在文档与 TASK-00
 - `evaluation_batches`：`(evaluation_plan_version_id)`、`(parent_batch_id)`
 - `evaluation_jobs`：`(batch_id, evaluation_plan_version_id)`、`(evaluation_plan_version_id, evaluation_plan_item_id)`
 
-顺带核对出：**全库另有 18 处外键没有显式前缀索引**（例如 `experiments.dataset_version_id`、`evaluation_runs.output_artifact_id`），属设计包原有风格，依赖 InnoDB 自动建索引。不改这 18 处，但 TASK-002 交付时必须把实际 DDL 中的自动索引列入报告，不能声称"设计已声明全部索引"。
+顺带核对出：**全库另有 18 处外键没有显式前缀索引**（例如 `experiments.dataset_version_id`、`evaluation_runs.output_artifact_id`），属设计包原有风格，依赖 InnoDB 自动建索引。**V1.2 已把 18 处全部补齐**，并把"每条外键必须有显式左前缀索引"变成自检规则；当前字典不再依赖任何隐式索引，详见 [task-002-freeze.md](./task-002-freeze.md) §4。
 
 ### 语义后果（已写入 02/06/modules）
 
@@ -61,7 +65,7 @@ TASK-001 的实现没有涉及这部分，因此修订成本在文档与 TASK-00
 
 | 评审意见 | 落实 |
 | --- | --- |
-| 离线 Run 是否必须关联 DatasetCase：不强制 | **未采纳为 V1 变更**。当前 V1 明确"不支持游离 Run"（`docs/modules/offline-evaluation.md`），且 Run 唯一键与报告配对依赖它。放宽需要 `case_ref` + 生成列唯一键，属跨模块变更。已列为 TASK-002 开工前唯一待确认项，禁止实施方自行放宽 |
+| 离线 Run 是否必须关联 DatasetCase：不强制 | **V1.0 裁决为必须绑定**（2026-10-18）。理由：Run 唯一键与报告配对都依赖它。历史记录没有 `case_id` 时，在 `DATASET_CASES` 阶段向草稿版本自动生成样本并把记录挂上去，不引入可空关联或生成列；详见 [task-002-freeze.md](./task-002-freeze.md) §1 |
 | 一次 Run 能否多次执行：支持，RunAttempt 记录 | 已在设计基线中，本任务补测试矩阵：重试只增 Attempt、不增 Run 槽位 |
 | 重评历史 Run：保留原 Run，新建 EvaluationJob 与结果 | **已采纳并落地为批次模型**（§2） |
 | 在线离线共用评测引擎 | 已在基线中；TASK-002 明确禁止为离线建第二套评测表/结果结构 |
@@ -102,7 +106,9 @@ TASK-001 的 19 个单测在改动后必须全部重新通过。
 - 没有实现 Outbox/Inbox、调度器、幂等中间件。
 - 没有触发 GitHub Actions（仓库尚未 push，无法取得 Run ID）。
 
-## 8. 待负责人确认
+## 8. 后续裁决（2026-10-18）
 
-1. 是否允许"无样本归属的历史日志"导入（见 §3 第一行）。默认按 V1 现状强制执行必绑。
-2. 是否现在 push 到 GitHub：**CI 验收依赖 push**，不 push 则 TASK-002 的数据库验收只能标记为"未完成"。
+原列两项待确认，现均已裁决，详见 [task-002-freeze.md](./task-002-freeze.md)：
+
+1. 离线 Run **必须**绑定 DatasetCase；导入可在 `DATASET_CASES` 阶段向草稿版本自动生成样本，但不得伪造标准答案、工具轨迹或成功状态。**不再允许游离 Run。**
+2. Git：可推送到独立开发分支（`develop` 或 `feature/task-002-foundation`），不合并 `main`；**需负责人明确授权后才执行**，目前尚未 push，CI 未运行。

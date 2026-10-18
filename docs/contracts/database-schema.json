@@ -706,7 +706,11 @@
           "execution_order"
         ]
       ],
-      "indexes": [],
+      "indexes": [
+        [
+          "evaluator_definition_id"
+        ]
+      ],
       "checks": [
         "execution_order >= 1"
       ],
@@ -828,6 +832,12 @@
           "status",
           "created_at",
           "id"
+        ],
+        [
+          "dataset_version_id"
+        ],
+        [
+          "evaluation_plan_version_id"
         ]
       ],
       "checks": [
@@ -926,7 +936,11 @@
           "id"
         ]
       ],
-      "indexes": [],
+      "indexes": [
+        [
+          "agent_version_id"
+        ]
+      ],
       "checks": [
         "repeat_count >= 1"
       ],
@@ -1139,6 +1153,10 @@
           "experiment_target_id",
           "source_system",
           "source_record_id"
+        ],
+        [
+          "id",
+          "experiment_id"
         ]
       ],
       "indexes": [
@@ -1161,6 +1179,20 @@
         ],
         [
           "trace_id"
+        ],
+        [
+          "id",
+          "active_attempt_id"
+        ],
+        [
+          "id",
+          "accepted_attempt_id"
+        ],
+        [
+          "output_artifact_id"
+        ],
+        [
+          "import_batch_id"
         ]
       ],
       "checks": [
@@ -1219,7 +1251,9 @@
             "id"
           ],
           "on_delete": "RESTRICT",
-          "on_update": "RESTRICT"
+          "on_update": "RESTRICT",
+          "optional": true,
+          "optional_reason": "空闲 Run 无进行中尝试；NULL 表示没有当前尝试"
         },
         {
           "columns": [
@@ -1232,7 +1266,9 @@
             "id"
           ],
           "on_delete": "RESTRICT",
-          "on_update": "RESTRICT"
+          "on_update": "RESTRICT",
+          "optional": true,
+          "optional_reason": "离线 Run 与未封口 Run 没有接受尝试"
         },
         {
           "columns": [
@@ -1388,6 +1424,9 @@
         [
           "status",
           "lease_until"
+        ],
+        [
+          "output_artifact_id"
         ]
       ],
       "checks": [
@@ -1630,6 +1669,13 @@
           "run_attempt_id",
           "sequence_no",
           "id"
+        ],
+        [
+          "run_id",
+          "run_attempt_id"
+        ],
+        [
+          "artifact_id"
         ]
       ],
       "checks": [
@@ -1658,7 +1704,9 @@
             "id"
           ],
           "on_delete": "RESTRICT",
-          "on_update": "RESTRICT"
+          "on_update": "RESTRICT",
+          "optional": true,
+          "optional_reason": "离线轨迹没有执行尝试，事件仍归属 Run"
         },
         {
           "columns": [
@@ -1674,7 +1722,7 @@
       ]
     },
     "evaluation_batches": {
-      "description": "一次对待评测Run集合按固定方案版本的批量评测；重评创建新批次",
+      "description": "一次对待评测Run集合按固定方案版本的批量评测；Run集合由evaluation_batch_runs固定，重评创建新批次",
       "columns": [
         {
           "name": "id",
@@ -1774,6 +1822,10 @@
         [
           "id",
           "evaluation_plan_version_id"
+        ],
+        [
+          "id",
+          "experiment_id"
         ]
       ],
       "indexes": [
@@ -1791,7 +1843,8 @@
           "evaluation_plan_version_id"
         ],
         [
-          "parent_batch_id"
+          "parent_batch_id",
+          "experiment_id"
         ]
       ],
       "checks": [
@@ -1825,11 +1878,88 @@
         },
         {
           "columns": [
-            "parent_batch_id"
+            "parent_batch_id",
+            "experiment_id"
           ],
           "references_table": "evaluation_batches",
           "references_columns": [
-            "id"
+            "id",
+            "experiment_id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT",
+          "optional": true,
+          "optional_reason": "INITIAL 批次没有父批次；NULL 表示无来源批次，非空时必须同实验"
+        }
+      ]
+    },
+    "evaluation_batch_runs": {
+      "description": "批次固定登记的Run集合；主键即(batch_id, run_id)，无独立生命周期",
+      "columns": [
+        {
+          "name": "batch_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "评测批次"
+        },
+        {
+          "name": "run_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "参与该批次的Run"
+        },
+        {
+          "name": "experiment_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "冗余自批次与Run，供两条复合外键强制同实验"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "加入时间"
+        }
+      ],
+      "primary_key": [
+        "batch_id",
+        "run_id"
+      ],
+      "unique_keys": [],
+      "indexes": [
+        [
+          "batch_id",
+          "experiment_id"
+        ],
+        [
+          "run_id",
+          "experiment_id"
+        ]
+      ],
+      "checks": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "batch_id",
+            "experiment_id"
+          ],
+          "references_table": "evaluation_batches",
+          "references_columns": [
+            "id",
+            "experiment_id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "run_id",
+            "experiment_id"
+          ],
+          "references_table": "evaluation_runs",
+          "references_columns": [
+            "id",
+            "experiment_id"
           ],
           "on_delete": "RESTRICT",
           "on_update": "RESTRICT"
@@ -1837,7 +1967,7 @@
       ]
     },
     "evaluation_jobs": {
-      "description": "批次内Run×方案项的逻辑评测任务",
+      "description": "批次内Run×方案项的逻辑评测任务；Run必须已登记在evaluation_batch_runs",
       "columns": [
         {
           "name": "id",
@@ -1849,7 +1979,7 @@
           "name": "run_id",
           "type": "CHAR(26)",
           "nullable": false,
-          "description": "所属Run"
+          "description": "所属Run，必须已登记在本批次"
         },
         {
           "name": "batch_id",
@@ -1966,6 +2096,10 @@
         [
           "evaluation_plan_version_id",
           "evaluation_plan_item_id"
+        ],
+        [
+          "id",
+          "active_attempt_id"
         ]
       ],
       "checks": [
@@ -2030,6 +2164,21 @@
           "references_columns": [
             "job_id",
             "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT",
+          "optional": true,
+          "optional_reason": "Job 空闲时没有当前尝试"
+        },
+        {
+          "columns": [
+            "batch_id",
+            "run_id"
+          ],
+          "references_table": "evaluation_batch_runs",
+          "references_columns": [
+            "batch_id",
+            "run_id"
           ],
           "on_delete": "RESTRICT",
           "on_update": "RESTRICT"
@@ -2252,7 +2401,12 @@
           "job_id"
         ]
       ],
-      "indexes": [],
+      "indexes": [
+        [
+          "job_id",
+          "job_attempt_id"
+        ]
+      ],
       "checks": [
         "score IS NULL OR (score >= 0 AND score <= 1)",
         "verdict IN ('PASS', 'FAIL', 'INDETERMINATE', 'NOT_APPLICABLE')",
@@ -2368,7 +2522,8 @@
           "id"
         ],
         [
-          "run_id"
+          "run_id",
+          "evaluation_job_id"
         ]
       ],
       "checks": [
@@ -2398,7 +2553,9 @@
             "id"
           ],
           "on_delete": "RESTRICT",
-          "on_update": "RESTRICT"
+          "on_update": "RESTRICT",
+          "optional": true,
+          "optional_reason": "Run 级标注不绑定具体 Job"
         }
       ]
     },
@@ -2602,6 +2759,12 @@
           "status",
           "created_at",
           "id"
+        ],
+        [
+          "dataset_version_id"
+        ],
+        [
+          "file_artifact_id"
         ]
       ],
       "checks": [
@@ -2711,7 +2874,14 @@
           "line_no"
         ]
       ],
-      "indexes": [],
+      "indexes": [
+        [
+          "dataset_case_id"
+        ],
+        [
+          "run_id"
+        ]
+      ],
       "checks": [
         "line_no >= 1",
         "status IN ('IMPORTED', 'REUSED', 'REJECTED')"

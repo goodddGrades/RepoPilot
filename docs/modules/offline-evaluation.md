@@ -4,7 +4,7 @@
 
 DATASET_CASES只写DRAFT DatasetVersion；OFFLINE_RUNS只写DRAFT OFFLINE Experiment，且datasetVersionId与实验一致、为已发布版本。两者均以经校验的READY Artifact为输入；原始文件可保留在受控对象存储，界面错误摘要不回显正文。
 
-历史数据没有样本时：先把任务输入规范化为case_key与input，导入草稿数据集，人工检查并发布；随后用同case_key导入历史Run。V1不支持“游离Run”，也不让导入器悄悄向已发布数据集插入样本。
+历史数据没有样本时：先把任务输入规范化为 case_key 与 input，导入草稿数据集（导入器可按固定规则自动生成 DatasetCase），人工检查并发布；随后用同 case_key 导入历史 Run。V1 不支持"游离 Run"，也不让导入器向已发布数据集插入样本。自动生成的样本只写输入，不补造标准答案：没有参考答案时 `expected_json` 留空，没有工具观测时不生成事件；缺证据的算子在评测阶段返回 NOT_APPLICABLE，而不是给通过。规则细节见 [领域模型](../architecture/02-domain-model.md) 的"离线导入与样本归属"。
 
 LiteLLM各部署日志字段可能不同。先支持本包规范JSONL；额外适配器需用真实脱敏样例建立字段映射、时间语义、请求/响应、用量和错误码测试，不能假定每种日志天然有工具链。单调用按LLM_CALL样本保存；Agent任务需要来源确实能关联的事件才能重建。
 
@@ -30,6 +30,6 @@ record_hash使用原始行字节（去行末LF/CRLF）SHA256用于错误追溯�
 
 ## 启动
 
-必须所有批次已终态且至少一条有效Run。start锁实验行并冻结清单；创建/执行OFFLINE_RUNS导入也锁该实验行，保证开始后不能继续写入。只对已导入且sealed的Run从PENDING转EVALUATING，并创建统一Job；历史Run不创建虚假的RunAttempt。
+必须所有批次已终态且至少一条有效Run。start锁实验行并冻结清单；创建/执行OFFLINE_RUNS导入也锁该实验行，保证开始后不能继续写入。启动事务创建 `INITIAL` 批次，把冻结的 Run 清单写入 `evaluation_batch_runs`，再为每条已导入且 sealed 的 Run 建统一 Job；历史 Run 不创建虚假的RunAttempt。批次 Job 数在创建前冻结为 `expected_job_count`，之后到达的导入记录不得进入该批次。
 
 离线缺少输出时保留null，不臆造答案；依赖输出的算子返回NOT_APPLICABLE。来源taskOutcome不可信时规范为UNKNOWN并保留来源说明。报告必须显示未知率与缺失槽位。
