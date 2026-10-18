@@ -4,21 +4,26 @@
 
 业务前缀 `/api/v1`，Worker前缀 `/internal/v1`，接口JSON使用camelCase。现有健康检查保留原路径。创建资源201；提交异步动作202；读和同步修改200；本契约无204成功响应。下载/上传的二进制另见Artifact约定。
 
-成功：`{"code":"OK","message":"success","data":{},"requestId":"..."}`。
+成功：`{"code":"OK","message":"success","data":{},"errors":[],"requestId":"...","timestamp":"2026-10-17T04:00:00.000Z"}`。
 
-错误：`{"code":"VALIDATION_ERROR","message":"请求参数不合法","details":[{"field":"name","message":"不能为空"}],"requestId":"..."}`。不返回堆栈或原始SQL。data在成功时必有，details在错误时可为空数组。
+错误：`{"code":"VALIDATION_ERROR","message":"请求参数不合法","data":null,"errors":[{"field":"name","message":"不能为空"}],"requestId":"...","timestamp":"2026-10-17T04:00:00.000Z"}`。不返回堆栈或原始SQL。data在成功时必有（可为 `{}`），错误时为 `null`；errors在成功时为空数组，错误时为字段级错误列表，无字段级信息时为空数组。
+
+**信封已冻结**：TASK-001 已实现上述字段（`code/message/data/errors/requestId/timestamp`）。TASK-002 只允许扩展错误码与分页组件，**不得改字段名、不得新增 `details` 别名、不得去掉 timestamp**。前端 `repopilot-web/src/types/api.ts` 依赖该结构。
 
 | 错误码 | HTTP |
 | --- | --- |
-| VALIDATION_ERROR / UNSUPPORTED_EVENT_VERSION | 400 |
+| VALIDATION_ERROR / BAD_REQUEST / UNSUPPORTED_EVENT_VERSION | 400 |
 | UNAUTHORIZED / FORBIDDEN | 401 / 403 |
 | RESOURCE_NOT_FOUND | 404 |
+| METHOD_NOT_ALLOWED / UNSUPPORTED_MEDIA_TYPE | 405 / 415 |
 | RESOURCE_CONFLICT / IDEMPOTENCY_CONFLICT / INVALID_STATE_TRANSITION / STALE_ATTEMPT / OPTIMISTIC_LOCK_CONFLICT | 409 |
 | PAYLOAD_TOO_LARGE | 413 |
 | RATE_LIMITED | 429 |
 | INTERNAL_ERROR / SERVICE_UNAVAILABLE | 500 / 503 |
 
-X-Request-Id接受1~64个ASCII字母、数字、下划线或短横线；缺失或不合法时由服务端生成ULID并返回响应头。写入MDC，finally清理，包括异常路径。它不是Trace ID。
+TASK-001 已实现的 `NOT_FOUND` / `BUSINESS_ERROR` / `DEPENDENCY_UNAVAILABLE` 在本契约中**改名**为 `RESOURCE_NOT_FOUND` / 上述细分 409 码 / `SERVICE_UNAVAILABLE`。这是 TASK-002 的契约收敛动作：三者均为枚举值重命名，HTTP 状态与信封结构不变；`BUSINESS_ERROR` 不再作为新代码的兜底，409 必须使用具体码。
+
+X-Request-Id接受1~64个ASCII字母、数字、下划线或短横线；缺失或不合法时由服务端生成ULID并返回响应头。写入MDC，finally清理，包括异常路径。它不是Trace ID。TASK-001 当前用 UUID v4 生成；TASK-002 引入 ULID 生成器后统一为 ULID。requestId 是不透明值，客户端不得解析其内部结构，因此该收敛不构成破坏性变更。
 
 页码列表：page≥1、pageSize默认20且1~100，响应data={items,page,pageSize,total}，默认createdAt DESC,id DESC，只有白名单字段可排序。过滤字段超长、未知状态或未知排序返回400，不能拼接用户输入SQL。
 
@@ -52,7 +57,7 @@ X-Request-Id接受1~64个ASCII字母、数字、下划线或短横线；缺失�
 
 V1算子定义通过经版本控制的注册清单和种子导入维护，不提供任意上传代码接口。AgentVersion响应含id,agentId,version,runnerType,config,status,publishedAt,createdAt,updatedAt；配置中的secretRef只展示引用，不解析密钥。DatasetCase响应字段与输入相同并补id,datasetVersionId,timestamps。PlanVersion含id,planId,version,status,config,items，Item含id,evaluatorDefinitionId,executionOrder,required,config。
 
-## 实验与运行（TASK-004/005）
+## 实验与运行（TASK-004/005；评测批次接口 TASK-007）
 
 | 方法与路径 | 请求 | 响应data |
 | --- | --- | --- |
@@ -63,7 +68,13 @@ V1算子定义通过经版本控制的注册清单和种子导入维护，不提
 | GET /experiments/{id}/runs | targetId?,caseKey?,status?,taskOutcome?,分页 | Run列表 |
 | GET /runs/{id} | 详情 | Run、acceptedAttemptId、输出、Job摘要、缺失标记 |
 | GET /runs/{id}/attempts | 执行尝试 | 页，含状态、耗时、脱敏错误，不回传leaseToken |
-| GET /runs/{id}/evaluation-jobs | 评测详情 | Job、尝试、最终Result |
+| GET /runs/{id}/evaluation-jobs | batchId?；不传时返回全部批次的分组摘要 | 按批次分组的 Job、尝试、最终Result |
+| POST /experiments/{id}/evaluation-batches | planVersionId,triggerType,parentBatchId?,runIds? 或 filter?；创建后202 | EvaluationBatch |
+| GET /experiments/{id}/evaluation-batches | status?,分页 | 批次页，含batchNo、triggerType、计数 |
+| GET /evaluation-batches/{id} | 详情 | 批次、固定方案版本、选择范围、Job计数与状态 |
+| POST /evaluation-batches/{id}/cancel | reason? | {id,status}，202 |
+
+实验启动时自动创建 `triggerType=INITIAL` 的批次，并由它产生首批 Job。重评必须通过 `POST /experiments/{id}/evaluation-batches` 新建批次：后端只允许已封口的 Run 进入选择范围，复用原 accepted Attempt 与 Trace，**禁止触发新的 Agent 执行**。同一 Run 可在多个批次出现；同一批次内 `(runId, planItemId)` 唯一。批次创建后其 planVersionId 与 selection 不可修改。
 
 Experiment创建时只建立草稿与Targets；开始事务固定expectedRunCount、预算快照与对象不可变配置。在线生成全部Run；离线冻结已导入Run清单并禁止后续导入，缺失槽位记录为报告缺失。大实验生成可分批，但V1上限10000个Run，TASK-004先用单事务完整生成并验证上限；不能在部分Run生成时开始执行。
 
@@ -92,8 +103,10 @@ Trace游标使用(created_at? 不使用) **(occurred_at,id)** 升序，cursor编
 | POST /annotation-tasks/{id}/submit | expectedVersion,verdict,failureCategory?,reason,evidence → Task |
 | POST /annotation-tasks/{id}/review | expectedVersion,approved,reason → Task；false对应RETURN |
 | POST /annotation-tasks/{id}/cancel | expectedVersion,reason → Task |
-| GET /experiments/{id}/report | annotationView=RAW或REVIEWED → 指标、覆盖率、缺失、分组结果 |
-| GET /experiments/{id}/comparison | baselineTargetId,candidateTargetId → 配对变化与不可比原因 |
+| GET /experiments/{id}/report | annotationView=RAW或REVIEWED,batchId? → 指标、覆盖率、缺失、分组结果；响应必须回显实际使用的batchId |
+| GET /experiments/{id}/comparison | baselineTargetId,candidateTargetId,batchId? → 配对变化与不可比原因；两Target必须来自同一批次 |
+
+报告与对比的批次选择规则：显式 `batchId` 优先；未传时取该实验最近一个终态批次；无批次可返回时明确报错，不静默回退到其他实验或另一方案版本。跨批次比较（不同算子版本）不自动判定回归，只返回"不可比原因=方案版本不同"，由人决定是否做描述性对比。
 
 operator从可信认证上下文取得；开发模式固定测试身份可配置，只绑定本机，不把浏览器任意operatorId当成已鉴权身份。V1同一操作者允许提交和审核，但在记录中标出selfReview=true；不能宣传为双人审核。
 

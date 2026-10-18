@@ -1,6 +1,6 @@
 # 数据库详细设计
 
-唯一字段来源为 [database-schema.json](../contracts/database-schema.json)。本文件由它生成，用于审阅；修改时同步两者。共 26 张表。没有在云端生成或执行真实 Flyway migration；本地 TASK-002 需按已有版本号实施。
+唯一字段来源为 [database-schema.json](../contracts/database-schema.json)。本文件由它生成，用于审阅；修改时同步两者。共 27 张表。没有在云端生成或执行真实 Flyway migration；本地 TASK-002 需按已有版本号实施。
 
 ## 统一规范
 
@@ -12,9 +12,11 @@ MySQL 8，InnoDB，utf8mb4_bin；ULID列用CHAR(26)/ascii_bin，统一大写且�
 
 ## 建表与迁移顺序
 
-先建身份/版本/方案，再建Experiment/Target，接着创建Run、Attempt、Artifact、Job及其Attempt、Trace、Result、Annotation、Import、Outbox/Inbox/API幂等表。Run与Attempt互引、Run与Artifact及Import互引，先创建所有表，再用ALTER TABLE添加循环外键；不能禁用foreign_key_checks掩盖依赖。复合外键的被引用列均有对应UNIQUE。
+先建身份/版本/方案，再建Experiment/Target，接着创建Run、Attempt、Artifact、Trace、评测批次、Job及其Attempt、Result、Annotation、Import、Outbox/Inbox/API幂等表。Run与Attempt互引、Run与Artifact及Import互引，Job与JobAttempt互引；先创建所有表，再用ALTER TABLE添加循环外键；不能禁用foreign_key_checks掩盖依赖。复合外键的被引用列均有对应UNIQUE。
 
-按仓库已有Flyway最大版本连续编号，推荐拆分身份配置、实验执行、轨迹评测、人工与导入、可靠性辅助五组；最后一组补循环外键。新项目可把全部建表和最后补外键放在同一个按依赖排序的迁移集合。每个阶段完成后保证Flyway状态可验证，不能改写已执行迁移。
+评测批次必须早于 Job 创建：Job 的 `(batch_id, evaluation_plan_version_id)` 指向批次，`(evaluation_plan_version_id, evaluation_plan_item_id)` 指向方案项，因此在数据库层就拒绝"Job 使用不属于本批次方案版本的算子项"。
+
+按仓库已有Flyway最大版本连续编号，推荐拆分身份配置、实验执行、轨迹与评测批次、人工与导入、可靠性辅助五组；最后一组补循环外键。新项目可把全部建表和最后补外键放在同一个按依赖排序的迁移集合。每个阶段完成后保证Flyway状态可验证，不能改写已执行迁移。
 
 ## 字段、约束与索引
 
@@ -218,7 +220,7 @@ CHECK：`version >= 1`；`status IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')`。
 | created_at | DATETIME(3) | 否 | - | UTC创建时间 |
 | updated_at | DATETIME(3) | 否 | - | UTC更新时间 |
 
-唯一约束：(plan_version_id, evaluator_definition_id)；(plan_version_id, execution_order)。
+唯一约束：(plan_version_id, id)（供 Job 复合外键引用）；(plan_version_id, evaluator_definition_id)；(plan_version_id, execution_order)。
 
 查询索引：无额外查询索引。
 
@@ -431,14 +433,49 @@ CHECK：`sequence_no IS NULL OR sequence_no >= 0`。
 
 外键：(artifact_id) → artifacts(id)；RESTRICT。
 
+## evaluation_batches
+
+一次对待评测 Run 集合按固定方案版本的批量评测；重评创建新批次。
+
+| 字段 | 类型 | 可空 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| id | CHAR(26) | 否 | - | 应用层生成ULID，ascii_bin |
+| experiment_id | CHAR(26) | 否 | - | 所属实验 |
+| evaluation_plan_version_id | CHAR(26) | 否 | - | 本批次使用的已发布方案版本，可不同于实验初始版本 |
+| batch_no | INT | 否 | - | 实验内递增，从1开始 |
+| trigger_type | VARCHAR(32) | 否 | - | INITIAL/REEVALUATION/MANUAL |
+| parent_batch_id | CHAR(26) | 是 | - | 重评来源批次，首次批次为空 |
+| selection_json | JSON | 否 | - | Run选择范围快照：显式runIds或过滤条件与排除原因 |
+| status | VARCHAR(32) | 否 | PENDING | 技术状态 |
+| expected_job_count | BIGINT | 否 | 0 | 创建Job前冻结的应有Job数 |
+| created_by | VARCHAR(128) | 否 | - | 发起人或调度器标识，不做虚假用户外键 |
+| started_at | DATETIME(3) | 是 | - | 首次开始时间 |
+| finished_at | DATETIME(3) | 是 | - | 终态时间 |
+| created_at | DATETIME(3) | 否 | - | UTC创建时间 |
+| updated_at | DATETIME(3) | 否 | - | UTC更新时间 |
+
+唯一约束：(experiment_id, batch_no)；(id, evaluation_plan_version_id)（供 Job 复合外键引用）。
+
+查询索引：(experiment_id, status, created_at)；(status, created_at, id)；(evaluation_plan_version_id)；(parent_batch_id)。后两条同时作为外键索引显式声明，不依赖 InnoDB 隐式创建。
+
+CHECK：`batch_no >= 1`；`expected_job_count >= 0`；`trigger_type IN ('INITIAL', 'REEVALUATION', 'MANUAL')`；`status IN ('PENDING', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED')`。
+
+外键：(experiment_id) → experiments(id)；RESTRICT。
+
+外键：(evaluation_plan_version_id) → evaluation_plan_versions(id)；RESTRICT。
+
+外键：(parent_batch_id) → evaluation_batches(id)；RESTRICT。
+
 ## evaluation_jobs
 
-Run×方案项的逻辑评测任务。
+批次内Run×方案项的逻辑评测任务。
 
 | 字段 | 类型 | 可空 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | id | CHAR(26) | 否 | - | 应用层生成ULID，ascii_bin |
 | run_id | CHAR(26) | 否 | - | 所属Run |
+| batch_id | CHAR(26) | 否 | - | 所属评测批次 |
+| evaluation_plan_version_id | CHAR(26) | 否 | - | 冗余自批次，用于复合外键锁定方案项归属 |
 | evaluation_plan_item_id | CHAR(26) | 否 | - | 固定方案项，服务层检查属于实验方案 |
 | status | VARCHAR(32) | 否 | PENDING | 技术状态 |
 | attempt_count | INT | 否 | 0 | 已创建尝试数 |
@@ -452,15 +489,19 @@ Run×方案项的逻辑评测任务。
 | created_at | DATETIME(3) | 否 | - | UTC创建时间 |
 | updated_at | DATETIME(3) | 否 | - | UTC更新时间 |
 
-唯一约束：(run_id, evaluation_plan_item_id)；(run_id, id)。
+唯一约束：(batch_id, run_id, evaluation_plan_item_id)；(run_id, id)。
 
-查询索引：(status, next_retry_at, created_at, id)。
+查询索引：(status, next_retry_at, created_at, id)；(batch_id, evaluation_plan_version_id)；(evaluation_plan_version_id, evaluation_plan_item_id)。后两条分别是两条复合外键所需的前缀索引，避免 InnoDB 隐式建索引后无法从设计文档追溯。
 
 CHECK：`attempt_count >= 0`；`status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'SKIPPED')`。
 
 外键：(run_id) → evaluation_runs(id)；RESTRICT。
 
-外键：(evaluation_plan_item_id) → evaluation_plan_items(id)；RESTRICT。
+外键：(batch_id) → evaluation_batches(id)；RESTRICT。
+
+外键：(batch_id, evaluation_plan_version_id) → evaluation_batches(id, evaluation_plan_version_id)；RESTRICT。
+
+外键：(evaluation_plan_version_id, evaluation_plan_item_id) → evaluation_plan_items(plan_version_id, id)；RESTRICT。
 
 外键：(id, active_attempt_id) → evaluation_job_attempts(job_id, id)；RESTRICT。
 
@@ -734,8 +775,10 @@ CHECK：无额外CHECK。
 
 每表一个持久化Entity，JSON使用Jackson JsonNode及统一TypeHandler；解析失败抛异常。CHAR去空格规则必须明确，ULID始终26位。不要让数据库排序规则自动更改业务标识。时间精度按毫秒截断，测试非UTC JVM/连接配置，禁止偷偷转为服务器本地时间。
 
+`evaluation_jobs` 的 `batch_id` 与 `evaluation_plan_version_id` 是业务写入时由服务层从批次复制的一次性快照，不允许后续更新；数据库中通过两条复合外键保证三者一致。
+
 Mapper只提供当前任务所需的基础读写，不一次性开放任意状态更新。后续领取和完成必须采用条件更新并检查影响行数，或锁行后变更。Entity不作为API响应。
 
 ## 必须在真实MySQL验证
 
-空库迁移、重复版本/样本/Run槽位/Attempt/eventId/Job最终结果、非法外键、非法score与状态、nullable离线AgentVersion、同Case不同Target/重复编号多个Run、UTC与JSON往返。检查所有复合外键真实生效。服务层测试另外覆盖在线AgentVersion必填、跨实验Case归属和发布不可变；不能把服务规则说成数据库CHECK已完成。
+空库迁移、重复版本/样本/Run槽位/Attempt/eventId/Job最终结果、非法外键、非法score与状态、nullable离线AgentVersion、同Case不同Target/重复编号多个Run、UTC与JSON往返。评测批次另外验证：同批次同 Run 同方案项重复 Job 被拒绝；同 Run 在不同批次可各有一个 Job；Job 引用不属于本批次方案版本的 planItem 被复合外键拒绝；`parent_batch_id` 只能指向同实验的既有批次（服务层校验）；批次方案版本与选择范围不可更新。检查所有复合外键真实生效。服务层测试另外覆盖在线AgentVersion必填、跨实验Case归属和发布不可变；不能把服务规则说成数据库CHECK已完成。

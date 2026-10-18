@@ -6,12 +6,14 @@
 flowchart TD
   D["DatasetVersion"] --> C["DatasetCase"]
   X["Experiment"] --> T["ExperimentTarget"]
+  X --> B["EvaluationBatch"]
   T --> R["EvaluationRun"]
   C --> R
   R --> A["RunAttempt"]
   R --> E["TraceEvent / Artifact"]
-  R --> J["EvaluationJob"]
-  P["PlanVersion / Item"] --> J
+  P["PlanVersion / Item"] --> B
+  B --> J["EvaluationJob"]
+  R --> J
   J --> JA["JobAttempt"]
   J --> V["EvaluationResult"]
 ```
@@ -24,7 +26,8 @@ flowchart TD
 - Experiment 固定数据集与方案版本，以及 1~N 个 Target。发布版本可被归档但仍可读取，历史实验继续使用快照。
 - Run 是一次逻辑观察单位，身份为 `(experiment_target_id, dataset_case_id, repeat_index)`。repeat_index 从 1 开始，不是重试次数。
 - RunAttempt 是一次基础设施执行尝试。失败重试增加 Attempt，不增加实验重复样本。成功执行后锁定 accepted_attempt_id，后续算子只读取这个 Attempt 的数据。
-- EvaluationJob 对应一个 Run×PlanItem；EvaluationJobAttempt 保存算子尝试；EvaluationResult 每 Job 一份最终结论。
+- EvaluationBatch 是一次评测批次的身份：固定 `(experiment, planVersion, Run 选择范围)`，可基于历史 Run 重新评测。同一 Run 允许出现在多个批次，历史批次与其结果不可覆盖。
+- EvaluationJob 对应批次内一个 Run×PlanItem；EvaluationJobAttempt 保存算子尝试；EvaluationResult 每 Job 一份最终结论。结果版本由所属批次承载，**不额外引入 `result.version` 自增列**，避免出现两套版本真相。
 
 ## 数据库与服务层约束分工
 
@@ -37,9 +40,31 @@ flowchart TD
 | 在线 Target 必须有已发布 AgentVersion | agent_version_id 可空 | ONLINE 模式强制校验 |
 | 发布版本内容不可修改 | 不用触发器实现业务版本管理 | 更新时锁父版本，校验状态；所有子项写入走同一规则 |
 | Trace/Job 的 Attempt 属于当前 Run/Job | 复合外键 | 校验当前租约与状态 |
+| Job 的算子项必须属于该批次的方案版本 | 复合外键：`(batch_id, plan_version_id)` 指向批次、`(plan_version_id, item_id)` 指向方案项 | 创建时校验方案版本已发布 |
+| 同一 Run 在同一批次同一算子项只能有一个 Job | UNIQUE `(batch_id, run_id, plan_item_id)` | 返回资源冲突，不静默复用 |
 | 重复 API/回调与内容冲突 | 唯一键、摘要字段 | 同键同摘要复用；同键异摘要返回 409 |
 
 Java 是唯一业务写入入口。发布时与编辑时都锁定同一个版本行，避免“先检查草稿、随后并发发布”的竞态。归档只改生命周期状态，不改版本内容。
+
+## 评测批次与重评
+
+评测与 Agent 执行是两个可独立重放的过程。**重新评测不得重新执行 Agent**：Agent 已产生的 Run、accepted Attempt 与封口 Trace 保持不变，只新增评测批次。
+
+| 触发类型 | 创建时机 | Run 选择范围 |
+| --- | --- | --- |
+| INITIAL | 实验开始时由后端创建，默认批次 | 实验内全部槽位 |
+| REEVALUATION | 负责人升级 Judge / 规则算子或方案后主动重评 | 显式 runIds 或按 status/target/时间过滤，写入 selection_json |
+| MANUAL | 补评、返工或修复个别 Job | 显式 runIds |
+
+规则：
+
+1. 批次固定一个**已发布** EvaluationPlanVersion；重评使用新版本时创建新批次，`parent_batch_id` 指向被重评批次，便于对比"同一批 Run 在两版算子下的结果"。
+2. `batch_no` 在实验内递增；历史批次只读，不修改其方案版本、选择范围或已产生的 Job/Result。
+3. 同一 Run 在不同批次可以再次评测；同一批次内同一 Run×方案项最多一个 Job。Job 重试仍只增加 JobAttempt，不新建 Job。
+4. 批次状态不反向改变 Experiment.status。Experiment.status 只描述执行管道与初始批次；重评失败不应把历史实验改写成 PARTIAL_FAILED。
+5. 报告与对比必须显式携带 `batchId`；未指定时取该实验最近一个终态批次，并在响应中回显实际使用的 batchId，禁止"看起来是旧数据、实际是新结果"。
+6. 没有 Run 的批次不允许创建；`expected_job_count` 在创建 Job 前冻结，用于判断批次是否完整。
+7. 在线与离线共用同一批次、Job、Attempt、Result 链路；离线 Run 只是缺少 RunAttempt，不另建评测表。
 
 ## 在线与离线
 

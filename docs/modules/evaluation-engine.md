@@ -2,7 +2,15 @@
 
 ## 输入冻结
 
-Run必须封口，Agent/数据集/方案/算子版本均可追溯。Java生成固定评测输入及inputHash；事件通过受限API读取，选acceptedAttempt，禁止把失败重试Trace合并成一次成功调用。每个方案项只创建一个Job，重试追加JobAttempt，不覆盖最终Result。
+Run必须封口，Agent/数据集/方案/算子版本均可追溯。Java生成固定评测输入及inputHash；事件通过受限API读取，选acceptedAttempt，禁止把失败重试Trace合并成一次成功调用。同一批次内每个Run×方案项只创建一个Job，重试追加JobAttempt，不覆盖最终Result。
+
+## 批次与重评
+
+Job 永远属于一个 EvaluationBatch，不能游离存在。`INITIAL` 批次在实验启动时创建；升级 Judge、规则算子或方案版本后重评，必须新建批次（`REEVALUATION`，`parentBatchId` 指向原批次），而不是复用旧 Job 或复活终态。批次固定一个已发布 PlanVersion，Job 的 `(planVersionId, planItemId)` 与批次的 `(batchId, planVersionId)` 由复合外键共同约束。
+
+重评的输入是**已存在的 Run 与其 accepted Attempt / 封口 Trace**：不重新执行 Agent，不新增 RunAttempt，不修改原 Run 的输出与 taskOutcome。新批次产生新的 Job、JobAttempt 与 Result；旧批次的结果保持只读。这样"同一个 Agent 产物、两版 Judge"的差异可以直接对比，也能解释每条分数由哪版算子产生。
+
+批次是结果版本的载体：不设 `result.version` 自增列，避免"批次版本"与"结果版本"两套真相。查询某 Run 的历史评分时按批次列出，不覆盖。
 
 V1按executionOrder串行推进同一Run的算子，不做通用依赖DAG；不同Run并行。前一个Job终态才可领取下一个，技术失败不自动跳过后续取证算子。取消则按状态机结束全部Job。算子不得读取前一个算子的非声明输出，避免隐藏依赖。
 

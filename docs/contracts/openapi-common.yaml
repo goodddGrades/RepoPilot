@@ -26,20 +26,27 @@ components:
       pattern: '^[0-7][0-9A-HJKMNP-TV-Z]{25}$'
     Success:
       type: object
-      required: [code, message, data, requestId]
+      required: [code, message, data, errors, requestId, timestamp]
       properties:
         code: {type: string, const: OK}
         message: {type: string}
         data: {}
+        errors:
+          type: array
+          maxItems: 0
+          description: 成功时固定为空数组，保持与错误响应同构。
         requestId: {type: string}
+        timestamp: {type: string, format: date-time}
     Error:
       type: object
-      required: [code, message, details, requestId]
+      required: [code, message, data, errors, requestId, timestamp]
       properties:
         code: {type: string}
         message: {type: string}
+        data: {type: 'null'}
         requestId: {type: string}
-        details:
+        timestamp: {type: string, format: date-time}
+        errors:
           type: array
           items:
             type: object

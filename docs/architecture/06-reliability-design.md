@@ -9,6 +9,7 @@
 | Experiment | DRAFT, QUEUED, RUNNING, COMPLETED, PARTIAL_FAILED, FAILED, CANCELLED |
 | Run | PENDING, QUEUED, RUNNING, EVALUATING, COMPLETED, FAILED, TIMED_OUT, CANCELLED |
 | RunAttempt / JobAttempt | RUNNING, COMPLETED, FAILED, TIMED_OUT, CANCELLED |
+| EvaluationBatch | PENDING, RUNNING, COMPLETED, PARTIAL_FAILED, FAILED, CANCELLED |
 | Job | PENDING, RUNNING, COMPLETED, FAILED, SKIPPED |
 | AnnotationTask | PENDING, CLAIMED, SUBMITTED, REVIEWED, RETURNED, CANCELLED |
 | ImportBatch | PENDING, RUNNING, COMPLETED, PARTIAL_FAILED, FAILED, CANCELLED |
@@ -16,7 +17,7 @@
 | Verdict | PASS, FAIL, INDETERMINATE, NOT_APPLICABLE |
 | TaskOutcome | UNKNOWN, SUCCESS, FAILURE, NOT_APPLICABLE |
 
-状态值由代码枚举及迁移 CHECK 共同约束，拒绝未知值。终态不自动回到执行态。用户重评创建新 Experiment；基础设施重试在同一 Run/Job 下追加 Attempt。
+状态值由代码枚举及迁移 CHECK 共同约束，拒绝未知值。终态不自动回到执行态。用户重评创建新 EvaluationBatch，复用历史 Run 与封口 Trace，不重跑 Agent，也不改写原批次结果；基础设施重试在同一 Run/Job 下追加 Attempt。
 
 ## 允许的转换
 
@@ -24,6 +25,7 @@
 - 在线 Run：PENDING→QUEUED→RUNNING→EVALUATING→COMPLETED。离线：PENDING→EVALUATING→COMPLETED。任何非终态可 CANCELLED；执行失败耗尽→FAILED/TIMED_OUT；评测必需算子失败→FAILED。
 - RunAttempt/JobAttempt：创建时 RUNNING；之后只到 COMPLETED/FAILED/TIMED_OUT/CANCELLED。
 - Job：PENDING→RUNNING→COMPLETED/FAILED；PENDING→SKIPPED。重试时 Job 保持 RUNNING，增加新的 Attempt；取消时待执行 Job 置 SKIPPED、运行中 Job 置 FAILED(error_code=CANCELLED)，Run 自身置 CANCELLED。
+- EvaluationBatch：PENDING→RUNNING→COMPLETED/PARTIAL_FAILED/FAILED（无任何成功 Job 才 FAILED）；PENDING/RUNNING→CANCELLED。批次创建后不可改方案版本与选择范围。
 - ImportBatch：PENDING→RUNNING→COMPLETED/PARTIAL_FAILED/FAILED；PENDING/RUNNING→CANCELLED。
 - Annotation：PENDING→CLAIMED→SUBMITTED→REVIEWED；SUBMITTED→RETURNED→CLAIMED；任意未审核状态→CANCELLED。
 - Version：DRAFT→PUBLISHED→ARCHIVED；不支持回到 DRAFT。Agent/Dataset 可 ACTIVE→ARCHIVED，不物理删除历史。
@@ -45,7 +47,7 @@
 
 网络断连、明确限流和暂时服务不可用可重试；无效配置、schema错误、权限拒绝不自动重试；质量 FAIL 不重跑掩盖。退避示例5秒、15秒，加入抖动，next_retry_at 落库。连接已断但上游可能已接受的模型调用属于不确定重试，记录重复调用风险与所有尝试成本，不能承诺外部调用恰好一次。
 
-旧 Attempt 先终态，父 Run/Job 保持 RUNNING，active_attempt_id 置空并写下一次可领取时间；预算耗尽后父终态。失败 Attempt 的 Trace 保留，但评测输入只取 accepted_attempt_id。Job 同理，最终结果只能由有效 JobAttempt 创建，唯一 job_id；失败尝试证据保留在尝试表和 Artifact。
+旧 Attempt 先终态，父 Run/Job 保持 RUNNING，active_attempt_id 置空并写下一次可领取时间；预算耗尽后父终态。失败 Attempt 的 Trace 保留，但评测输入只取 accepted_attempt_id。Job 同理，最终结果只能由有效 JobAttempt 创建，每个 Job 唯一一条 Result；失败尝试证据保留在尝试表和 Artifact。重评是新建批次与 Job，不是复活旧 Job。
 
 ## 封口与迟到事件
 
@@ -56,6 +58,8 @@ Worker 完成前上传全部事件并获得逐项确认，再调用完成。完�
 Run 的 required Job 必须全部达到 COMPLETED 才能技术完成；NOT_APPLICABLE/INDETERMINATE 仍属于算子正常执行，质量门禁另行判断。required Job FAILED/SKIPPED 导致 Run FAILED；optional Job 失败保留警告但不让技术成功率下降。所有 Job 都终态后再聚合 Run。
 
 实验启动时固定 expected_run_count=样本数×各Target.repeat_count之和。在线必有对应槽位；离线允许缺失但缺失数必须进入报告。所有已提交工作终态后：无缺失且技术成功全数→COMPLETED；至少一个技术成功且有失败/缺失→PARTIAL_FAILED；无技术成功→FAILED。取消优先→CANCELLED。质量 FAIL 不让 Experiment 技术状态变 FAILED。离线0条有效记录禁止开始。
+
+评测批次独立聚合：expected_job_count 在 Job 全部创建前冻结，Job 全部终态后按"全完成/部分完成/全失败"判定 COMPLETED/PARTIAL_FAILED/FAILED。Experiment 的技术状态只由初始批次（trigger_type=INITIAL）与 Run 执行结果决定，后续重评批次失败不得回写 Experiment.status。
 
 ## Outbox 与 MQ（TASK-011）
 

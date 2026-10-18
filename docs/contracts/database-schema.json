@@ -695,6 +695,10 @@
       "unique_keys": [
         [
           "plan_version_id",
+          "id"
+        ],
+        [
+          "plan_version_id",
           "evaluator_definition_id"
         ],
         [
@@ -1669,8 +1673,171 @@
         }
       ]
     },
+    "evaluation_batches": {
+      "description": "一次对待评测Run集合按固定方案版本的批量评测；重评创建新批次",
+      "columns": [
+        {
+          "name": "id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "应用层生成ULID，ascii_bin"
+        },
+        {
+          "name": "experiment_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属实验"
+        },
+        {
+          "name": "evaluation_plan_version_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "本批次使用的已发布方案版本，可不同于实验初始版本"
+        },
+        {
+          "name": "batch_no",
+          "type": "INT",
+          "nullable": false,
+          "description": "实验内递增，从1开始"
+        },
+        {
+          "name": "trigger_type",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "INITIAL/REEVALUATION/MANUAL"
+        },
+        {
+          "name": "parent_batch_id",
+          "type": "CHAR(26)",
+          "nullable": true,
+          "description": "重评来源批次，首次批次为空"
+        },
+        {
+          "name": "selection_json",
+          "type": "JSON",
+          "nullable": false,
+          "description": "Run选择范围快照：显式runIds或过滤条件与排除原因"
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(32)",
+          "nullable": false,
+          "description": "技术状态",
+          "default": "PENDING"
+        },
+        {
+          "name": "expected_job_count",
+          "type": "BIGINT",
+          "nullable": false,
+          "description": "创建Job前冻结的应有Job数",
+          "default": "0"
+        },
+        {
+          "name": "created_by",
+          "type": "VARCHAR(128)",
+          "nullable": false,
+          "description": "发起人或调度器标识，不做虚假用户外键"
+        },
+        {
+          "name": "started_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "首次开始时间"
+        },
+        {
+          "name": "finished_at",
+          "type": "DATETIME(3)",
+          "nullable": true,
+          "description": "终态时间"
+        },
+        {
+          "name": "created_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC创建时间"
+        },
+        {
+          "name": "updated_at",
+          "type": "DATETIME(3)",
+          "nullable": false,
+          "description": "UTC更新时间"
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "unique_keys": [
+        [
+          "experiment_id",
+          "batch_no"
+        ],
+        [
+          "id",
+          "evaluation_plan_version_id"
+        ]
+      ],
+      "indexes": [
+        [
+          "experiment_id",
+          "status",
+          "created_at"
+        ],
+        [
+          "status",
+          "created_at",
+          "id"
+        ],
+        [
+          "evaluation_plan_version_id"
+        ],
+        [
+          "parent_batch_id"
+        ]
+      ],
+      "checks": [
+        "batch_no >= 1",
+        "expected_job_count >= 0",
+        "trigger_type IN ('INITIAL', 'REEVALUATION', 'MANUAL')",
+        "status IN ('PENDING', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED', 'FAILED', 'CANCELLED')"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "experiment_id"
+          ],
+          "references_table": "experiments",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "evaluation_plan_version_id"
+          ],
+          "references_table": "evaluation_plan_versions",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "parent_batch_id"
+          ],
+          "references_table": "evaluation_batches",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        }
+      ]
+    },
     "evaluation_jobs": {
-      "description": "Run×方案项的逻辑评测任务",
+      "description": "批次内Run×方案项的逻辑评测任务",
       "columns": [
         {
           "name": "id",
@@ -1683,6 +1850,18 @@
           "type": "CHAR(26)",
           "nullable": false,
           "description": "所属Run"
+        },
+        {
+          "name": "batch_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "所属评测批次"
+        },
+        {
+          "name": "evaluation_plan_version_id",
+          "type": "CHAR(26)",
+          "nullable": false,
+          "description": "冗余自批次，用于复合外键锁定方案项归属"
         },
         {
           "name": "evaluation_plan_item_id",
@@ -1764,6 +1943,7 @@
       ],
       "unique_keys": [
         [
+          "batch_id",
           "run_id",
           "evaluation_plan_item_id"
         ],
@@ -1778,6 +1958,14 @@
           "next_retry_at",
           "created_at",
           "id"
+        ],
+        [
+          "batch_id",
+          "evaluation_plan_version_id"
+        ],
+        [
+          "evaluation_plan_version_id",
+          "evaluation_plan_item_id"
         ]
       ],
       "checks": [
@@ -1798,10 +1986,36 @@
         },
         {
           "columns": [
+            "batch_id"
+          ],
+          "references_table": "evaluation_batches",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "batch_id",
+            "evaluation_plan_version_id"
+          ],
+          "references_table": "evaluation_batches",
+          "references_columns": [
+            "id",
+            "evaluation_plan_version_id"
+          ],
+          "on_delete": "RESTRICT",
+          "on_update": "RESTRICT"
+        },
+        {
+          "columns": [
+            "evaluation_plan_version_id",
             "evaluation_plan_item_id"
           ],
           "references_table": "evaluation_plan_items",
           "references_columns": [
+            "plan_version_id",
             "id"
           ],
           "on_delete": "RESTRICT",
