@@ -14,8 +14,8 @@
 | JSON / UTC / ULID / 枚举映射 | 集成测试通过（含非 UTC JVM 场景） |
 | 公共组件复用、契约未改 | 复用；仅错误码枚举值收敛 + 映射扩展 |
 | Surefire / Failsafe 分层 | 落实，`mvn verify` 真正执行 `*IT` |
-| GitHub Actions | **已编写，未实际运行**（本轮无 push 授权） |
-| 真实库验收 | 在本地隔离 MySQL 8.0.22 实例完成 |
+| GitHub Actions | **已实际运行**：4/4 job 通过（run `39116300359`），集成测试 0 跳过 |
+| 真实库验收 | 本地 MySQL 8.0.22 + CI `mysql:8.0` 双环境通过 |
 
 ## 2. 交付物
 
@@ -110,7 +110,8 @@ JDK 21.0.10（`~/.jdks/ms-21.0.10`）。没有使用 Docker（本机 `wsl.exe` �
 测试库在运行前为空库，Flyway 从 V1 建到 V7。
 
 **唯一跳过项**：`ApiHealthIT.readinessShouldBeUpWhenEveryDependencyIsAvailable`，
-它需要 RabbitMQ，本机没有；该用例由 `REPOPILOT_IT_REQUIRE_ALL_UP=true` 开启，CI 中会执行。
+它需要 RabbitMQ，本机没有；该用例由 `REPOPILOT_IT_REQUIRE_ALL_UP=true` 开启。
+该项已在 CI 中真实执行并通过（见 §3.3），因此"未运行"清单为空。
 除它之外没有被 `@Disabled` 或 assumption 静默跳过的测试。
 
 ### 3.1 空库复现（第二轮独立验证）
@@ -131,11 +132,56 @@ JDK 21.0.10（`~/.jdks/ms-21.0.10`）。没有使用 Docker（本机 `wsl.exe` �
 | 项 | 值 |
 | --- | --- |
 | 分支 | `develop` |
-| Commit | `5299e46f5372499601dc1227577506a01584769b` |
-| 短哈希 | `5299e46` |
-| 变更规模 | 133 files changed, +9386 / −124 |
-| 工作区 | clean（`git status --short` 无输出） |
-| 远程状态 | **未 Push**（本轮无授权） |
+| 代码提交 | `5299e46f5372499601dc1227577506a01584769b`（133 files, +9386 / −124） |
+| 文档提交 | `ab5e7cfc97986a83a7284e572fee30da018e2fdb` |
+| 历史对齐 | `6497c7c` 合并 `origin/main`（`7cea1fc`，无共同祖先，`--allow-unrelated-histories`） |
+| 远程 | 已推送到 `origin/develop`，无 Force Push、未改写任何历史 |
+
+**关于无共同祖先**：远程 `main` 只有 GitHub 默认 `Initial commit`（3 字节的 `README.md` 占位）。
+使用 `--allow-unrelated-histories` 合并，唯一冲突 `README.md`（add/add）保留本地 294 行完整版。
+合并后 `git diff ab5e7cf HEAD` 为空——**合并对文件内容零改动**，只是让两个历史具备共同祖先，
+使后续 `develop → main` 的 PR 能正常计算差异。
+
+### 3.3 CI 实际运行（最后一环）
+
+| 项 | 值 |
+| --- | --- |
+| Workflow | `ci` |
+| Run ID | **`39116300359`** |
+| 触发 | push → `develop` |
+| 结论 | **success，4/4 job 通过** |
+| 地址 | https://github.com/goodddGrades/RepoPilot/actions/runs/39116300359 |
+
+| Job | 耗时 | 结果 |
+| --- | --- | --- |
+| 设计字典自检 | 8s | ✓ 静态规则 + DDL `--check` + Java `--check` |
+| 后端（MySQL 8 + RabbitMQ） | 1m13s | ✓ 单测 38 / 集成 38，**Skipped: 0** |
+| Worker（pytest） | 13s | ✓ |
+| Web（构建） | 24s | ✓ |
+
+关键差异——**CI 上 Skipped 为 0**：
+
+```
+[INFO] Tests run: 38, Failures: 0, Errors: 0, Skipped: 0   ← 单元测试
+[INFO] Tests run: 38, Failures: 0, Errors: 0, Skipped: 0   ← 集成测试（ApiHealthIT 4/4 全跑）
+[INFO] BUILD SUCCESS
+```
+
+本地因无 RabbitMQ 而跳过的那条 readiness 用例，在 CI 上随 `rabbitmq:3.13` service 一起执行并通过。
+因此 TASK-002 的"未运行测试"清单，在 CI 维度上**为空**。
+
+迁移版本校验同样在 CI 内闭环：
+
+```
+test "$(cat versions.txt)" = "1,2,3,4,5,6,7"   →  1,2,3,4,5,6,7  ✓
+```
+
+即：GitHub 托管的 `mysql:8.0` 空库上，Flyway 一次性建到 V7，`SchemaDictionaryIT` 的
+canonical 归一化比对在该补丁版本上同样通过，未出现 `information_schema` 文本格式差异。
+
+CI 仅有若干 annotation 提示（`actions/checkout@v4`、`setup-java@v4` 等基于 Node 20 的 action
+被强制跑在 Node 24 上；`ubuntu-latest` 将于 2026-10-19 迁移到 Ubuntu 26），均不影响结论，
+留待后续统一升级 action 版本时处理。
 
 ## 4. 公共组件的复用与改动
 
@@ -172,14 +218,17 @@ JDK 21.0.10（`~/.jdks/ms-21.0.10`）。没有使用 Docker（本机 `wsl.exe` �
 
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
-| GitHub Actions 实际运行 | **未运行** | 本轮无 push 授权；workflow 已写好，需 push 后跑 |
-| RabbitMQ 相关断言 | 未在本机执行 | 本机无 RabbitMQ；readiness 全 UP 用例在 CI 执行 |
-| MySQL 版本覆盖 | 仅 8.0.22 | CI 用 `mysql:8.0` 最新补丁版，版本差异由 CI 覆盖 |
+| GitHub Actions 实际运行 | **已完成** | run `39116300359` 全绿，集成测试 0 跳过 |
+| RabbitMQ 相关断言 | 已在 CI 执行 | 本机无 RabbitMQ；readiness 全 UP 用例在 CI 通过 |
+| MySQL 版本覆盖 | 8.0.22（本机）+ `mysql:8.0`（CI） | 两个补丁版本均通过，未出现 `information_schema` 文本差异 |
 | 业务功能 | 未实现 | 按范围禁止：无 API、无页面、无 Runner/Judge |
+| CI action 版本 | 未升级 | `checkout@v4` / `setup-java@v4` 基于 Node 20，仅有弃用提示，不影响结论 |
+| `develop → main` 合并 | **未执行** | 已建 PR 待评审；合并 `main` 属独立决策，未自动合并 |
 
-## 7. 下一步（等负责人授权）
+## 7. 下一步
 
-1. Push 到 `develop` 并跑 CI，用真实 Run ID 补齐"数据库集成验收"的最后一环。
-2. 授权后进入 TASK-003（Agent 与数据集管理），复用本任务的实体、Mapper 与状态机。
-3. 若 CI 在 MySQL 8.0 最新版上出现差异（例如 `information_schema` 文本格式变化），
-   先修比对逻辑而不是放宽断言。
+1. ~~Push 到 `develop` 并跑 CI~~ **已完成**：run `39116300359`，4/4 job 通过。
+2. 将 `develop` 合并进 `main`（PR 已建，待负责人评审后决定是否合并）。
+3. 授权后进入 TASK-003（Agent 与数据集管理），复用本任务的实体、Mapper 与状态机。
+4. 若后续 CI 环境（如 `ubuntu-latest` 迁移到 Ubuntu 26）导致 `information_schema` 文本差异，
+   **先修 canonical 归一化逻辑，不放宽断言**——放宽断言等于放弃这项检查。
