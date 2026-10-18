@@ -48,7 +48,7 @@ def date_time(value):
 def main():
     global checks
     tables = load('docs/contracts/database-schema.json')['tables']
-    check(len(tables)==26, 'table count')
+    check(len(tables)==27, 'table count')
     for name,t in tables.items():
         columns = {c['name']:c for c in t['columns']}
         check(len(columns)==len(t['columns']), 'duplicate column: '+name)
