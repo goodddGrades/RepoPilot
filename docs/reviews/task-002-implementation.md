@@ -147,10 +147,12 @@ JDK 21.0.10（`~/.jdks/ms-21.0.10`）。没有使用 Docker（本机 `wsl.exe` �
 | 项 | 值 |
 | --- | --- |
 | Workflow | `ci` |
-| Run ID | **`39116300359`** |
-| 触发 | push → `develop` |
+| Run ID（push） | **`39116300359`** — https://github.com/goodddGrades/RepoPilot/actions/runs/39116300359 |
+| Run ID（push，文档提交） | `39116550932` — success |
+| Run ID（pull_request） | `39116578031` — success |
+| PR | **#1** `develop → main` — https://github.com/goodddGrades/RepoPilot/pull/1（`MERGEABLE`，未合并） |
+| 触发 | push → `develop` 与 `pull_request` |
 | 结论 | **success，4/4 job 通过** |
-| 地址 | https://github.com/goodddGrades/RepoPilot/actions/runs/39116300359 |
 
 | Job | 耗时 | 结果 |
 | --- | --- | --- |
