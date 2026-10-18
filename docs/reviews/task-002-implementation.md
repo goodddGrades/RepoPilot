@@ -185,6 +185,26 @@ CI 仅有若干 annotation 提示（`actions/checkout@v4`、`setup-java@v4` 等�
 被强制跑在 Node 24 上；`ubuntu-latest` 将于 2026-10-19 迁移到 Ubuntu 26），均不影响结论，
 留待后续统一升级 action 版本时处理。
 
+### 3.4 本地集成测试环境的安全处置（评审提出，已整改）
+
+评审指出"隔离 MySQL 使用了空 root 密码，只能作为临时环境，应确认端口仅监听本地、并在测试结束后停止"。
+核查后确认**当时确实存在问题**，不是"本来没问题"：
+
+| 项 | 整改前（有风险） | 整改后 |
+| --- | --- | --- |
+| 监听地址 | `--no-defaults` 未指定 `bind-address`，实际监听 `0.0.0.0:13306` | `--bind-address=127.0.0.1`，`netstat` 只看到 `127.0.0.1:13306` |
+| root 密码 | 空密码 | 首次启动即设置本地测试密码；空密码登录实测被拒（`ERROR 1045`） |
+| 业务账号 | 直接用 root | 专用 `repopilot`，只有 `repopilot_it.*` / `repopilot_ddl_probe.*` 权限；读 `mysql.user` 被拒（`ERROR 1142`） |
+| 启停 | 手工敲命令，忘了就常驻 | `tools/it-mysql.sh start\|status\|stop\|env\|reset`，`status` 会显式报告监听地址 |
+| 当前状态 | 实例常驻 | **已停止**，端口 13306 已释放 |
+
+同一轮还遇到一件值得记录的事：一次 `mvnw` 被中断（SIGTERM）恰好落在 `V7` 执行中间，
+MySQL 的 DDL 非事务性，留下了若干个已提交的 `ALTER TABLE ADD CONSTRAINT`，
+而 `flyway_schema_history` 里没有 V7 记录。再次迁移报
+`Duplicate foreign key constraint name 'fk_evaluation_runs_id_active_attempt_id'`。
+这类半完成状态**不能手工补 DDL**，只能整库重建 —— 这就是 `tools/it-mysql.sh reset` 存在的原因。
+重建后用专用账号重跑 `SchemaMigrationIT`：4 passed / 0 failed / 0 skipped。
+
 ## 4. 公共组件的复用与改动
 
 | 组件 | 动作 |

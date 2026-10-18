@@ -6,9 +6,18 @@
   这样循环引用（Run↔Attempt、Job↔JobAttempt）不需要关闭 foreign_key_checks；
 - 每条 CHECK 生成具名约束，便于集成测试断言具体失败原因。
 
+冻结机制（为什么必须有）：
+    迁移一旦在某个环境执行过，就已经是历史。若允许生成器继续按字典重写它，
+    字典一改动就会把已执行迁移改写，本机与 CI 的 checksum 对不上，
+    真实环境更是直接不可复现。因此：
+    - docs/contracts/migrations.lock.json 记录已发布迁移的 sha256；
+    - 冻结的迁移**不再被生成器写入**，字典变更只能落到新增迁移上；
+    - `--check` 同时校验"冻结文件未被改动"和"未冻结文件与字典一致"。
+
 用法：
-    python tools/gen_ddl_from_dict.py            # 写文件
+    python tools/gen_ddl_from_dict.py            # 写文件（跳过已冻结的迁移）
     python tools/gen_ddl_from_dict.py --check    # 只比对，发现差异则退出码 1
+    python tools/gen_ddl_from_dict.py --freeze   # 把当前迁移封存进 lock（CI 通过后执行）
 """
 from __future__ import annotations
 
@@ -21,6 +30,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DICT_PATH = ROOT / 'docs/contracts/database-schema.json'
 OUT_DIR = ROOT / 'repopilot-server/src/main/resources/db/migration'
+LOCK_PATH = ROOT / 'docs/contracts/migrations.lock.json'
 
 # 按字典顺序切分迁移；每组开头注释说明这组表为什么放在一起
 GROUPS = [
@@ -203,23 +213,88 @@ def build() -> dict[str, str]:
     return files
 
 
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def load_lock() -> dict[str, str]:
+    """返回 {迁移文件名: sha256}；没有 lock 文件时视为全部未冻结。"""
+    if not LOCK_PATH.exists():
+        return {}
+    data = json.loads(LOCK_PATH.read_text(encoding='utf-8'))
+    return dict(data.get('frozen', {}))
+
+
+def write_lock(files: dict[str, str]) -> None:
+    payload = {
+        'note': (
+            '已发布迁移的 sha256 冻结记录。冻结后生成器不再覆写这些文件；'
+            '表结构变更必须新增迁移，并同步字典，由 SchemaDictionaryIT 用真实库校验最终状态。'
+        ),
+        'generator': 'tools/gen_ddl_from_dict.py',
+        'frozen': {name: sha256_text(content) for name, content in sorted(files.items())},
+    }
+    LOCK_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8', newline='\n'
+    )
+
+
 def main() -> int:
     files = build()
+    frozen = load_lock()
+
+    # 1) 冻结文件完整性：被改写就说明有人动了历史迁移
+    tampered = [
+        name for name, digest in frozen.items()
+        if not (OUT_DIR / name).exists()
+        or sha256_text((OUT_DIR / name).read_text(encoding='utf-8')) != digest
+    ]
+
+    # 2) 未冻结文件必须与字典一致（冻结文件代表历史，不与当前字典比对）
+    stale = [
+        name for name, content in files.items()
+        if name not in frozen
+        and (not (OUT_DIR / name).exists()
+             or (OUT_DIR / name).read_text(encoding='utf-8') != content)
+    ]
+
+    if '--freeze' in sys.argv:
+        if tampered or stale:
+            print('存在不一致，拒绝冻结：' + ', '.join(tampered + stale), file=sys.stderr)
+            return 1
+        write_lock(files)
+        print(f'OK：已冻结 {len(files)} 个迁移到 {LOCK_PATH.relative_to(ROOT)}')
+        return 0
+
     if '--check' in sys.argv:
-        stale = []
-        for name, content in files.items():
-            path = OUT_DIR / name
-            if not path.exists() or path.read_text(encoding='utf-8') != content:
-                stale.append(name)
+        if tampered:
+            print('以下已冻结迁移被改动（历史迁移不可修改，请新增迁移）：'
+                  + ', '.join(tampered), file=sys.stderr)
+            return 1
         if stale:
             print('以下迁移文件与字典不一致：' + ', '.join(stale), file=sys.stderr)
             return 1
-        print(f'OK：{len(files)} 个迁移文件与字典一致')
+        print(f'OK：{len(files)} 个迁移文件与字典一致（其中 {len(frozen)} 个已冻结且未被改动）')
         return 0
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    skipped = []
     for name, content in files.items():
+        if name in frozen:
+            skipped.append(name)
+            continue
         (OUT_DIR / name).write_text(content, encoding='utf-8', newline='\n')
         print(f'written {name}: {content.count(chr(10))} lines')
+    if skipped:
+        print(f'已冻结，跳过写入：{", ".join(sorted(skipped))}')
+        drift = [n for n in skipped if sha256_text(files[n]) != frozen[n]]
+        if drift:
+            print(
+                '注意：下列已冻结迁移的生成结果与冻结内容不一致，说明字典已变更。\n'
+                '      不要改历史迁移，请新增迁移并在真实库上用 SchemaDictionaryIT 校验最终状态：'
+                + ', '.join(drift),
+                file=sys.stderr,
+            )
     return 0
 
 

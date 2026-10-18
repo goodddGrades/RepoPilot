@@ -135,6 +135,12 @@ set -a && source ../.env && set +a          # Git Bash / WSL 载入环境变量
 ./mvnw verify                                # 单元 + 集成（Failsafe，需基础设施）
 ./mvnw spring-boot:run                       # 启动，默认 8080
 
+# 集成测试用的隔离 MySQL（Docker 不可用时的替代；只监听 127.0.0.1）
+./tools/it-mysql.sh start                    # 启动（首次自动初始化，root 密码不再为空）
+./tools/it-mysql.sh reset                    # 整库重建（迁移被打断后必须执行）
+eval "$(./tools/it-mysql.sh env)"            # 导出 REPOPILOT_IT_DB_*，供 mvnw 使用
+./tools/it-mysql.sh stop                     # 测试结束必须停止，不常驻
+
 # Worker
 cd repopilot-worker
 python -m venv .venv && . .venv/Scripts/activate   # Windows；Linux/macOS 用 .venv/bin/activate
@@ -159,6 +165,24 @@ npm run build      # 类型检查 + 生产构建
 4. 仅实现当前 TASK，不提前实现后续业务，不重构无关模块。
 5. 普通实现细节自行决定并记录；影响数据库语义、跨语言契约或后续 TASK 的改动，先写具体差异与推荐方案，
    继续不受影响的工作，等负责人决定。**不能以"优化"为由引入新中间件或改变架构。**
+
+### 数据库变更流程（V2–V7 已冻结，本节为强制规则）
+
+"改字典还是改 SQL"必须只有一个答案，否则 TASK-006 前后必然出现"手工改了 Entity，下次生成又被覆盖"。
+
+1. `docs/contracts/database-schema.json` 是**领域模型与目标 Schema 的设计依据**。改结构先改字典，再谈迁移。
+2. **已执行的 Flyway 迁移永不修改。** `docs/contracts/migrations.lock.json` 记录 V2–V7 的 sha256，
+   生成器 `--check` 会校验；改动历史迁移 CI 直接失败。
+3. 冻结后的结构变更**只能新增迁移**（V8、V9…）。生成器不再覆写已冻结文件，写入时跳过并给出提示。
+4. 生成器目前只负责**基线生成**，尚不支持"按字典 diff 出增量迁移"。因此增量迁移**手写**，写完后必须：
+   - 同步 `database-schema.json`；
+   - 重新生成 Entity / Mapper（`tools/gen_java_from_dict.py`）；
+   - 在真实库上跑 `SchemaDictionaryIT` —— 它把实际库与字典逐项比对，是"字典 ↔ 库"一致性的最终关口
+     （冻结后字典与基线既然允许分离，这个测试就是唯一权威）；
+   - 全绿后执行 `python tools/gen_ddl_from_dict.py --freeze`，把新迁移纳入冻结集合。
+5. Entity / Mapper 是**生成物，不要手改**。要新字段就改字典再重新生成，否则下次生成会被覆盖。
+6. 迁移中途被打断时，MySQL 会留下"部分已完成"的 DDL（DDL 非事务性），此时必须整库重建
+   （`./tools/it-mysql.sh reset`），**不要手工补 DDL 掩盖**——半完成状态比报错更难查。
 
 ---
 

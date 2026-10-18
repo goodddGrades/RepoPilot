@@ -36,11 +36,18 @@ jobs:
         run: python tools/gen_java_from_dict.py --check
 
   backend:
-    name: 后端（MySQL 8 + RabbitMQ）
+    name: 后端（MySQL ${{ matrix.mysql }} + RabbitMQ）
     runs-on: ubuntu-latest
+    strategy:
+      # 目标版本失败不能被最新版通过掩盖，因此不用 fail-fast
+      fail-fast: false
+      matrix:
+        # 8.0.36 = deploy/docker-compose.yml 锁定的目标版本；
+        # 8.0 = 向前兼容性冒烟，避免升级补丁版后才发现 information_schema 文本差异
+        mysql: ['8.0.36', '8.0']
     services:
       mysql:
-        image: mysql:8.0
+        image: mysql:${{ matrix.mysql }}
         env:
           MYSQL_ROOT_PASSWORD: root_it_only
           MYSQL_DATABASE: repopilot_it
@@ -83,6 +90,14 @@ jobs:
             sleep 2
           done
           echo "MySQL 未就绪" >&2; exit 1
+      - name: 记录数据库版本
+        run: |
+          echo "matrix.mysql = ${{ matrix.mysql }}"
+          # 断言实际连通的服务端版本与矩阵期望一致，避免镜像 tag 漂移后静默测错版本
+          mysql -h 127.0.0.1 -P 3306 -u repopilot -prepopilot_it_only -N -B \
+            -e "SELECT VERSION()" | tee actual-version.txt
+          grep -q "^${{ matrix.mysql }}\." actual-version.txt \
+            || { echo "服务端版本与 ${{ matrix.mysql }} 不符" >&2; exit 1; }
       - name: 确认目标库为空
         run: |
           count=$(mysql -h 127.0.0.1 -P 3306 -u repopilot -prepopilot_it_only -N -B \
