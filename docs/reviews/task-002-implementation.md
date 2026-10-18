@@ -155,7 +155,8 @@ Windows 路径，Spring 去连一个名为 `D:/WorkBuddy/.../PortableGit/` 的 v
 | --- | --- |
 | Workflow | `ci` |
 | Run ID（首轮 push） | **`39116300359`** — https://github.com/goodddGrades/RepoPilot/actions/runs/39116300359 |
-| Run ID（双版本矩阵，最终） | **`39118089184`** — 5/5 job 通过 |
+| Run ID（双版本矩阵） | **`39118089184`** — 5/5 job 通过 |
+| Run ID（PR，文档修正后） | **`39141123131`** — 5/5 job 通过（设计 7s / 后端 8.0.36 1m9s / 后端 8.0 1m17s / Worker 13s / Web 18s） |
 | PR | **#1** `develop → main` — https://github.com/goodddGrades/RepoPilot/pull/1（`MERGEABLE`，未合并） |
 | 触发 | push → `develop` 与 `pull_request` |
 | 结论 | **success** |
