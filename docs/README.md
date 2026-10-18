@@ -7,17 +7,18 @@
 
 1. [`00-product-scope.md`](./00-product-scope.md) — 产品范围、V1 边界、交付阶段
 2. [`architecture/01-system-overview.md`](./architecture/01-system-overview.md) — 组件职责与调度分期
-3. [`reviews/task-002-implementation.md`](./reviews/task-002-implementation.md) — **TASK-002 实施交付报告：迁移、实体、测试与偏差（最新）**
-4. [`reviews/rabbitmq-local-verification.md`](./reviews/rabbitmq-local-verification.md) — 本机 RabbitMQ 3.13.7 实跑核查与收发闭环（readiness 全 UP 已在本机执行）
-5. [`reviews/task-002-actual-ddl.sql`](./reviews/task-002-actual-ddl.sql) — TASK-002 实际 DDL（空库 Flyway V1..V7 后由 mysqldump 导出）
-6. [`reviews/task-002-ddl-indexes.md`](./reviews/task-002-ddl-indexes.md) — TASK-002 实际 DDL 索引清单（由 information_schema 导出）
-7. [`reviews/task-002-v121-delta.md`](./reviews/task-002-v121-delta.md) — TASK-002 设计 V1.2.1：INITIAL 批次唯一、LATEST 语义、离线单次上传
-8. [`reviews/task-002-freeze.md`](./reviews/task-002-freeze.md) — TASK-002 设计冻结 V1.2：批次 Run 集合、跨实验约束、报告默认语义、索引审计
-9. [`reviews/task-002-revision.md`](./reviews/task-002-revision.md) — TASK-002 修订：评测批次与契约收敛
-10. [`reviews/task-002-delta.md`](./reviews/task-002-delta.md) — 相对早期草案的修订（为什么这样做）
-11. [`reviews/repository-alignment.md`](./reviews/repository-alignment.md) — 本仓库核对结果、实际版本与偏差
-12. [`reviews/design-merge-report.md`](./reviews/design-merge-report.md) — 设计包合并时的冲突清单与处置
-13. [`reviews/task-003-contract-revision.md`](./reviews/task-003-contract-revision.md) — **TASK-003 契约修订（2026-10-18 裁决）：JSONL 整批原子、重复 caseKey 报错、`DRAFT→ARCHIVED`（实施前必读）**
+3. [`reviews/task-003-delivery.md`](./reviews/task-003-delivery.md) — **TASK-003 实施交付报告：Agent/数据集/评测方案 API、JSONL 整批导入、前端页面与并发验收（最新）**
+4. [`reviews/task-003-contract-revision.md`](./reviews/task-003-contract-revision.md) — TASK-003 契约修订（2026-10-18 裁决）：JSONL 整批原子、重复 caseKey 报错、`DRAFT→ARCHIVED`
+5. [`reviews/task-002-implementation.md`](./reviews/task-002-implementation.md) — TASK-002 实施交付报告：迁移、实体、测试与偏差
+6. [`reviews/rabbitmq-local-verification.md`](./reviews/rabbitmq-local-verification.md) — 本机 RabbitMQ 3.13.7 实跑核查与收发闭环（readiness 全 UP 已在本机执行）
+7. [`reviews/task-002-actual-ddl.sql`](./reviews/task-002-actual-ddl.sql) — TASK-002 实际 DDL（空库 Flyway V1..V7 后由 mysqldump 导出）
+8. [`reviews/task-002-ddl-indexes.md`](./reviews/task-002-ddl-indexes.md) — TASK-002 实际 DDL 索引清单（由 information_schema 导出）
+9. [`reviews/task-002-v121-delta.md`](./reviews/task-002-v121-delta.md) — TASK-002 设计 V1.2.1：INITIAL 批次唯一、LATEST 语义、离线单次上传
+10. [`reviews/task-002-freeze.md`](./reviews/task-002-freeze.md) — TASK-002 设计冻结 V1.2：批次 Run 集合、跨实验约束、报告默认语义、索引审计
+11. [`reviews/task-002-revision.md`](./reviews/task-002-revision.md) — TASK-002 修订：评测批次与契约收敛
+12. [`reviews/task-002-delta.md`](./reviews/task-002-delta.md) — 相对早期草案的修订（为什么这样做）
+13. [`reviews/repository-alignment.md`](./reviews/repository-alignment.md) — 本仓库核对结果、实际版本与偏差
+14. [`reviews/design-merge-report.md`](./reviews/design-merge-report.md) — 设计包合并时的冲突清单与处置
 
 ## 全局架构
 
