@@ -19,7 +19,7 @@
 | Vue 页面查看管理 | 通过 | 6 个页面 + 6 张截图（`docs/reviews/task-003-shots/`） |
 | 全量测试 | 通过 | `mvn verify`：单元 **75** / 集成 **88** / **Skipped 0** / BUILD SUCCESS |
 | CI | 通过 | run `39151108726`，5/5 job 绿，两条 MySQL 版本腿均 75/88、0 跳过 |
-| 并发不变量 C1–C4 | 通过 | `ConcurrencyIT` 6 条，连跑 3 轮无偶发失败 |
+| 并发不变量 C1–C4 | 通过 | `ConcurrencyIT` 6 条，共执行 5 次（3 次单独 + 2 次全量 `verify`）全部通过，无偶发失败 |
 
 **按要求未做**：没有真正运行 Agent，没有 Judge 评分（留给 TASK-004/007）。
 
