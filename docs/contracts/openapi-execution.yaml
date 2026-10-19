@@ -680,12 +680,19 @@ components:
 
     Job:
       type: object
+      description: |
+        TASK-007 扩展：`result` 与 `attempts` 来自评测执行引擎落库的结果与 Attempt 历史，
+        重评批次会带着新的 `batchId` 追加而不是覆盖。`attempts` 按尝试号升序，
+        重试不覆盖旧 Attempt 的错误信息。
       properties:
         id: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
         batchId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
         batchNo: { type: integer }
         evaluatorKey: { type: string }
         evaluatorVersion: { type: integer }
+        evaluatorType:
+          type: string
+          enum: [RULE, TRACE, COST, TEST, LLM_JUDGE]
         executionOrder: { type: integer }
         required: { type: boolean }
         status:
@@ -693,6 +700,14 @@ components:
           enum: [PENDING, RUNNING, COMPLETED, FAILED, SKIPPED]
         attemptCount: { type: integer }
         errorCode: { type: [string, 'null'] }
+        errorMessage: { type: [string, 'null'] }
+        startedAt: { type: [string, 'null'], format: date-time }
+        finishedAt: { type: [string, 'null'], format: date-time }
+        result:
+          $ref: './openapi-evaluation.yaml#/components/schemas/JobResult'
+        attempts:
+          type: array
+          items: { $ref: './openapi-evaluation.yaml#/components/schemas/JobAttempt' }
 
     JobSummary:
       type: object
@@ -763,14 +778,27 @@ components:
       type: object
       required: [kind, runId, attemptId, attemptNo, leaseToken, leaseUntil, deadlineAt, input]
       properties:
-        kind: { type: string, enum: [RUN, EVALUATION] }
+        kind:
+          type: string
+          enum: [RUN, EVALUATION]
+          description: |
+            `RUN` 的 `input` 是 `RunInput`，回调走 `/run-attempts/**`；
+            `EVALUATION`（TASK-007）的 `input` 是评测输入，回调走 `/job-attempts/**`。
+            两种任务的租约、心跳与 fencing 规则一致，但业务语义不同：
+            评测任务的"完成"是提交结论（verdict/score/evidence）。
         runId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
         attemptId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
         attemptNo: { type: integer, minimum: 1 }
         leaseToken: { type: string, description: 明文只在此处返回一次；后端仅存 SHA-256 摘要 }
         leaseUntil: { type: string, format: date-time }
         deadlineAt: { type: string, format: date-time, description: 硬截止，续租不能突破 }
-        input: { $ref: '#/components/schemas/RunInput' }
+        jobId:
+          type: string
+          description: 仅 `kind=EVALUATION` 有值，指向 `evaluation_jobs.id`；完成/失败回执据此关联结果。
+        input:
+          oneOf:
+            - $ref: '#/components/schemas/RunInput'
+            - $ref: './openapi-evaluation.yaml#/components/schemas/EvaluationInput'
 
     RunInput:
       type: object
