@@ -232,9 +232,14 @@ run.status=COMPLETED（重评不回写已完成的历史 Run）
 | --- | --- |
 | 分支 | `develop`（未合并 PR，未开始 TASK-008） |
 | 提交 | `9c746fa` 后端引擎 → `20d3137` 测试 → `52ac728` Worker → `a620010` 前端 → `76197ad` 契约/演示/报告 |
-| CI Run ID | **39266901234**，5 个 Job 全绿 |
+| CI Run ID | **39273425645**（attempt 2），5 个 Job 全绿；前一次 **39266901234** 同为 5/5 |
 | CI 实跑数字 | 后端两条 MySQL 腿：单元 75、集成 153（0 失败 0 跳过）；Worker 92 passed；Web 构建成功；设计字典自检通过（DDL 6 迁移 / Java 76 文件 / 静态检查 1260 项） |
 | 数据库迁移 | 无新增。Flyway V1~V7 与 `migrations.lock.json` 未改动（`gen_ddl_from_dict.py --check` 确认 6 个迁移未被篡改） |
+
+一次失败与代码无关：run 39273425645 的首次尝试里，`后端（MySQL 8.0 + RabbitMQ）` 这条腿的
+RabbitMQ 服务容器启动即 `BOOT FAILED`（`Error when reading /var/lib/rabbitmq/.erlang.cookie: eacces`，
+GitHub runner 的容器权限问题），测试一行都没跑。同一次提交的另一条带 RabbitMQ 的腿已通过，
+因此按基础设施抖动重跑该 job，attempt 2 全绿。未改动任何代码或测试来绕过它。
 
 CI 的两条 MySQL 腿分别是 MySQL 8.0.36 与 MySQL 8.0，均开启 `REPOPILOT_IT_REQUIRE_ALL_UP=true`
 （就绪探针真的要求 DB 与 RabbitMQ 都 UP），因此本报告中的"0 跳过"是硬断言的结果，
