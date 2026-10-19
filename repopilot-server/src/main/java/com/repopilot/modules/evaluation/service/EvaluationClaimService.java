@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.repopilot.common.api.ErrorCode;
 import com.repopilot.common.exception.BusinessException;
 import com.repopilot.common.id.Ulid;
+import com.repopilot.common.persistence.DeadlockRetry;
 import com.repopilot.common.state.AttemptStatus;
 import com.repopilot.common.worker.LeaseTokens;
 import com.repopilot.common.worker.WorkerProperties;
@@ -107,7 +108,10 @@ public class EvaluationClaimService {
         if (evaluatorKeys.isEmpty() || maxTasks <= 0) {
             return List.of();
         }
-        List<WorkerDtos.WorkItem> items = tx.execute(status -> {
+        // 死锁重试：并发评测 Worker 抢同一批 Job 时，插入 job_attempts 与回写
+        // evaluation_jobs 的行锁顺序偶发循环等待。重试安全：领取幂等，
+        // 重放最多多领一个任务，不会产生重复 Attempt。
+        List<WorkerDtos.WorkItem> items = DeadlockRetry.execute(tx, () -> tx.execute(status -> {
             int candidateLimit = Math.min(maxTasks * CLAIM_CANDIDATE_FACTOR, CLAIM_CANDIDATE_LIMIT);
             List<String> candidates = jobMapper.listClaimCandidates(evaluatorKeys, now,
                     props.maxAttemptsPerJob(), candidateLimit);
@@ -124,7 +128,7 @@ public class EvaluationClaimService {
                 claimed.add(startAttempt(workerId, locked.get(), now));
             }
             return claimed;
-        });
+        }));
         if (items != null && !items.isEmpty()) {
             log.info("Worker {} 领取 {} 个评测任务", workerId, items.size());
         }

@@ -201,8 +201,14 @@ public class RunStore {
         return attemptMapper.findExpired(now, limit);
     }
 
-    public List<TraceEvent> lockEvents(List<String> eventIds) {
-        return eventIds.isEmpty() ? List.of() : eventMapper.findByEventIdsForUpdate(eventIds);
+    /**
+     * 按 eventId 批量读已存在事件（TASK-012：不再加锁）。
+     *
+     * <p>幂等由唯一约束保证，不靠读锁——见
+     * {@code TraceEventMapper.findByEventIds} 的注释里关于间隙锁死锁的实测记录。
+     */
+    public List<TraceEvent> findEvents(List<String> eventIds) {
+        return eventIds.isEmpty() ? List.of() : eventMapper.findByEventIds(eventIds);
     }
 
     public void insertEvent(TraceEvent event) {

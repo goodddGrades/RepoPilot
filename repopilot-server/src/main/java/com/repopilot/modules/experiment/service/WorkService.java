@@ -8,6 +8,7 @@ import com.repopilot.common.api.ErrorCode;
 import com.repopilot.common.exception.BusinessException;
 import com.repopilot.common.hash.Sha256;
 import com.repopilot.common.id.Ulid;
+import com.repopilot.common.persistence.DeadlockRetry;
 import com.repopilot.common.json.CanonicalJson;
 import com.repopilot.common.registry.RunnerRegistry;
 import com.repopilot.common.state.AttemptStatus;
@@ -37,6 +38,7 @@ import com.repopilot.modules.trace.event.TraceEventTypes;
 import com.repopilot.modules.trace.service.RunStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -155,7 +157,11 @@ public class WorkService {
         List<String> typeNames = runnerTypes.stream().map(Enum::name).toList();
         Instant now = Instant.now();
 
-        List<WorkerDtos.WorkItem> tasks = tx.execute(status -> {
+        // 死锁重试：多个 Worker 同时用 FOR UPDATE SKIP LOCKED 抢同一批候选时，
+        // 抢到后又要在同一事务里插入 run_attempts 并回写 evaluation_runs，
+        // 交叉的行锁顺序偶发循环等待。重试整个领取事务是安全的：
+        // 领取是幂等的——重放一次最多多领一条任务，不会产生重复 Attempt。
+        List<WorkerDtos.WorkItem> tasks = DeadlockRetry.execute(tx, () -> tx.execute(status -> {
             List<WorkerDtos.WorkItem> items = new ArrayList<>(maxTasks);
             // 候选只是"看一眼有哪些可选"，真正的抢占在 lockClaimCandidate 里逐条加锁完成。
             // 候选窗口比 maxTasks 宽，避免并发时互相抢同一条导致有人领空。
@@ -191,7 +197,7 @@ public class WorkService {
                         maxTasks - items.size(), now));
             }
             return items;
-        });
+        }));
         if (tasks != null && !tasks.isEmpty()) {
             log.info("Worker {} 领取 {} 个任务", workerId, tasks.size());
         }
@@ -247,7 +253,11 @@ public class WorkService {
             throw BusinessException.field("events", "单批事件不能超过 " + MAX_EVENTS_PER_REQUEST + " 条");
         }
         Instant now = Instant.now();
-        return tx.execute(status -> {
+        // 死锁重试：多 Worker 并发写轨迹时，(run_id, run_attempt_id) 复合外键
+        // 插入会对父行加共享锁，InnoDB 检测到循环等待就回滚其中一个事务。
+        // 这是并发数据库的正常机制，不是系统错误——重试整个事务即可恢复。
+        // 整事务重试是安全的：事件按 eventId 幂等，重放不会产生重复写入。
+        return DeadlockRetry.execute(tx, () -> tx.execute(status -> {
             Live live = requireLiveAttempt(attemptId, request.leaseToken(), now);
             if (live.run().getSealedAt() != null) {
                 throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
@@ -269,7 +279,7 @@ public class WorkService {
             }
 
             Map<String, TraceEvent> existing = new HashMap<>();
-            for (TraceEvent event : runStore.lockEvents(eventIds)) {
+            for (TraceEvent event : runStore.findEvents(eventIds)) {
                 existing.put(event.getEventId(), event);
             }
 
@@ -284,11 +294,28 @@ public class WorkService {
                     acks.add(new WorkerDtos.EventAckItem(draft.eventId(), "DUPLICATE"));
                     continue;
                 }
-                runStore.insertEvent(draft.entity());
-                acks.add(new WorkerDtos.EventAckItem(draft.eventId(), "ACCEPTED"));
+                try {
+                    runStore.insertEvent(draft.entity());
+                    acks.add(new WorkerDtos.EventAckItem(draft.eventId(), "ACCEPTED"));
+                } catch (DuplicateKeyException dup) {
+                    // 并发重放：两个请求都"查不到"，同时插入，只有一个能成功。
+                    // 撞唯一键正是幂等要处理的情形——回查判定内容是否一致，
+                    // 而不是把它变成一个 500 给 Worker。
+                    TraceEvent winner = runStore.findEvents(List.of(draft.eventId()))
+                            .stream().findFirst().orElse(null);
+                    if (winner == null) {
+                        // 冲突键不是 event_id（理论上不该发生），不猜测，交给上层报错
+                        throw dup;
+                    }
+                    if (!winner.getEventHash().equals(draft.hash())) {
+                        throw new BusinessException(ErrorCode.RESOURCE_CONFLICT,
+                                "eventId " + draft.eventId() + " 已存在且内容不同");
+                    }
+                    acks.add(new WorkerDtos.EventAckItem(draft.eventId(), "DUPLICATE"));
+                }
             }
             return new WorkerDtos.EventsResult(acks);
-        });
+        }));
     }
 
     private EventDraft buildDraft(int index, WorkerDtos.EventItem item, EvaluationRun run,
@@ -394,7 +421,10 @@ public class WorkService {
         String completionHash = completionHash(request);
         Instant now = Instant.now();
 
-        WorkerDtos.CompleteResult result = tx.execute(status -> {
+        // 死锁重试：封口事务同时锁 Attempt、Run 与 INITIAL 批次行，
+        // 并发封口不同 Run 时与聚合写入可能交叉加锁。整事务重试安全：
+        // completionHash 让重放走幂等分支，不会重复封口或重复建 Job。
+        WorkerDtos.CompleteResult result = DeadlockRetry.execute(tx, () -> tx.execute(status -> {
             RunAttempt attempt = runStore.lockAttempt(attemptId)
                     .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND,
                             "RunAttempt 不存在: " + attemptId));
@@ -430,7 +460,7 @@ public class WorkService {
             jobService.createPendingJobs(live.run().getId(), batch.getId(),
                     batch.getEvaluationPlanVersionId(), attemptId);
             return new WorkerDtos.CompleteResult(attemptId, "COMPLETED");
-        });
+        }));
 
         aggregation.aggregateIfSettled(runStore.requireRun(runIdOf(attemptId)).getExperimentId());
         return result;

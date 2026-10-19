@@ -81,9 +81,20 @@ public class EvaluationJobService {
         if (jobs.isEmpty()) {
             return 0;
         }
-        jobMapper.batchInsert(jobs);
-        // 首批 Job 落库后批次才进入 RUNNING；这条更新是幂等的（只从 PENDING 出发）
+        // 批次状态推进放在插入之前（TASK-012 压测实测后调整）：
+        // evaluation_batches 的 INITIAL 行是该实验下所有 Run 封口都要锁的**热点行**。
+        // 原来"先插 Job、再 markRunning"意味着批次行的行锁被持有到整个事务结束——
+        // 8 个 Worker 并发封口同一实验的不同 Run 时，这些事务全部排在同一行上，
+        // 与 evaluation_jobs 插入的间隙锁交叉，实测必然触发死锁。
+        //
+        // 同一个事务内调整顺序不改变原子性：要么都成功，要么一起回滚。
+        // 但把热点行的锁持有时间从"整批插入"缩短到"一条 UPDATE"，
+        // 交叉窗口大幅收窄。批次行本身是唯一热点，别的表按 Run/Job 打散，
+        // 不存在第二个全局串行点，所以无需全局锁序或外层重试。
+        //
+        // 该 UPDATE 幂等且单调（只从 PENDING 出发），重复执行无副作用。
         batchMapper.markRunning(batchId, now);
+        jobMapper.batchInsert(jobs);
         // Job 与唤醒通知同事务：Job 创建提交了而通知丢了，评测 Job 会一直 PENDING
         // 直到 Worker 的周期领取兜底——能跑，但白白慢一个轮询周期。
         // 反过来（通知提交、Job 回滚）则会产生指向不存在 Job 的通知，必须避免。

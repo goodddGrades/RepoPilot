@@ -7,20 +7,27 @@
 
 1. [`00-product-scope.md`](./00-product-scope.md) — 产品范围、V1 边界、交付阶段
 2. [`architecture/01-system-overview.md`](./architecture/01-system-overview.md) — 组件职责与调度分期
-3. [`reviews/task-011-delivery.md`](./reviews/task-011-delivery.md) — **TASK-011 实施交付报告：Outbox/RabbitMQ、inbox 去重、13 个故障演练用例与已知限制（最新）**
-4. [`reviews/task-010-delivery.md`](./reviews/task-010-delivery.md) — TASK-010 实施交付报告：实验报告、配对回归、质量门禁
-5. [`reviews/task-003-delivery.md`](./reviews/task-003-delivery.md) — TASK-003 实施交付报告：Agent/数据集/评测方案 API、JSONL 整批导入、前端页面与并发验收
-6. [`reviews/task-003-contract-revision.md`](./reviews/task-003-contract-revision.md) — TASK-003 契约修订（2026-10-18 裁决）：JSONL 整批原子、重复 caseKey 报错、`DRAFT→ARCHIVED`
-7. [`reviews/task-002-implementation.md`](./reviews/task-002-implementation.md) — TASK-002 实施交付报告：迁移、实体、测试与偏差
-8. [`reviews/rabbitmq-local-verification.md`](./reviews/rabbitmq-local-verification.md) — 本机 RabbitMQ 3.13.7 实跑核查与收发闭环（readiness 全 UP 已在本机执行）
-9. [`reviews/task-002-actual-ddl.sql`](./reviews/task-002-actual-ddl.sql) — TASK-002 实际 DDL（空库 Flyway V1..V7 后由 mysqldump 导出）
-10. [`reviews/task-002-ddl-indexes.md`](./reviews/task-002-ddl-indexes.md) — TASK-002 实际 DDL 索引清单（由 information_schema 导出）
-11. [`reviews/task-002-v121-delta.md`](./reviews/task-002-v121-delta.md) — TASK-002 设计 V1.2.1：INITIAL 批次唯一、LATEST 语义、离线单次上传
-12. [`reviews/task-002-freeze.md`](./reviews/task-002-freeze.md) — TASK-002 设计冻结 V1.2：批次 Run 集合、跨实验约束、报告默认语义、索引审计
-13. [`reviews/task-002-revision.md`](./reviews/task-002-revision.md) — TASK-002 修订：评测批次与契约收敛
-14. [`reviews/task-002-delta.md`](./reviews/task-002-delta.md) — 相对早期草案的修订（为什么这样做）
-15. [`reviews/repository-alignment.md`](./reviews/repository-alignment.md) — 本仓库核对结果、实际版本与偏差
-16. [`reviews/design-merge-report.md`](./reviews/design-merge-report.md) — 设计包合并时的冲突清单与处置
+3. [`reviews/task-012-delivery.md`](./reviews/task-012-delivery.md) — **TASK-012 交付报告：压测装置、两个真实并发缺陷根因、修复前后对照、慢查询与索引结论（最新）**
+4. [`reviews/task-011-delivery.md`](./reviews/task-011-delivery.md) — TASK-011 交付报告：Outbox/RabbitMQ、inbox 去重、13 个故障演练用例与已知限制
+5. [`reviews/task-010-delivery.md`](./reviews/task-010-delivery.md) — TASK-010 交付报告：实验报告、配对回归、质量门禁
+6. [`reviews/task-009-delivery.md`](./reviews/task-009-delivery.md) — TASK-009 交付报告：人工标注工作台、失败归因、乐观锁与追加历史
+7. [`reviews/task-008-delivery.md`](./reviews/task-008-delivery.md) — TASK-008 交付报告：Judge 算子、测试命令算子、真实 CLI Runner 适配
+8. [`reviews/task-007-delivery.md`](./reviews/task-007-delivery.md) — TASK-007 交付报告：统一评测引擎与结果闭环
+9. [`reviews/task-006-delivery.md`](./reviews/task-006-delivery.md) — TASK-006 交付报告：统一 Trace 查询与可视化回放
+10. [`reviews/task-005-delivery.md`](./reviews/task-005-delivery.md) — TASK-005 交付报告：规范 JSONL 离线导入
+11. [`reviews/task-004-delivery.md`](./reviews/task-004-delivery.md) — TASK-004 交付报告：在线 Mock 执行与 Worker 基础
+12. [`reviews/task-003-delivery.md`](./reviews/task-003-delivery.md) — TASK-003 交付报告：Agent/数据集/评测方案 API、JSONL 整批导入、前端页面与并发验收
+13. [`reviews/task-003-contract-revision.md`](./reviews/task-003-contract-revision.md) — TASK-003 契约修订（2026-10-18 裁决）：JSONL 整批原子、重复 caseKey 报错、`DRAFT→ARCHIVED`
+14. [`reviews/task-002-implementation.md`](./reviews/task-002-implementation.md) — TASK-002 交付报告：迁移、实体、测试与偏差
+15. [`reviews/rabbitmq-local-verification.md`](./reviews/rabbitmq-local-verification.md) — 本机 RabbitMQ 3.13.7 实跑核查与收发闭环（readiness 全 UP 已在本机执行）
+16. [`reviews/task-002-actual-ddl.sql`](./reviews/task-002-actual-ddl.sql) — TASK-002 实际 DDL（空库 Flyway V1..V7 后由 mysqldump 导出）
+17. [`reviews/task-002-ddl-indexes.md`](./reviews/task-002-ddl-indexes.md) — TASK-002 实际 DDL 索引清单（由 information_schema 导出）
+18. [`reviews/task-002-v121-delta.md`](./reviews/task-002-v121-delta.md) — TASK-002 设计 V1.2.1：INITIAL 批次唯一、LATEST 语义、离线单次上传
+19. [`reviews/task-002-freeze.md`](./reviews/task-002-freeze.md) — TASK-002 设计冻结 V1.2：批次 Run 集合、跨实验约束、报告默认语义、索引审计
+20. [`reviews/task-002-revision.md`](./reviews/task-002-revision.md) — TASK-002 修订：评测批次与契约收敛
+21. [`reviews/task-002-delta.md`](./reviews/task-002-delta.md) — 相对早期草案的修订（为什么这样做）
+22. [`reviews/repository-alignment.md`](./reviews/repository-alignment.md) — 本仓库核对结果、实际版本与偏差
+23. [`reviews/design-merge-report.md`](./reviews/design-merge-report.md) — 设计包合并时的冲突清单与处置
 
 ## 全局架构
 
@@ -72,6 +79,7 @@
 | [`development-guide.md`](./development-guide.md) | **通用规范**：测试层级、CI、配置清单、备份恢复、性能方法 |
 | [`01-local-development.md`](./01-local-development.md) | **本仓库 Runbook**：真实端口、启动顺序、实测命令、排障 |
 | [`reviews/design-validation.md`](./reviews/design-validation.md) | 设计包自检报告 |
+| [`reviews/perf/`](./reviews/perf/) | TASK-012 压测原始结果 JSON 与 InnoDB 死锁图节选（修复前后对照） |
 
 ## 任务与样例
 

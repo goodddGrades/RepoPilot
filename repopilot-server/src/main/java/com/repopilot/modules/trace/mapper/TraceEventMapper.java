@@ -63,11 +63,29 @@ public interface TraceEventMapper {
     // ---- TASK-004：事件幂等与清单摘要 ----
 
     /**
-     * 批量按 eventId 读已存在事件并加锁。
+     * 批量按 eventId 读已存在事件。
      *
-     * <p>为什么要加锁而不是"先查后插"：同一批事件重放与首次写入可能并发，
-     * 查询与插入之间的窗口足够让两边的 eventId 都"不存在"。
-     * 锁住已存在的行后，后到者要么看到行（走 DUPLICATE），要么插入撞唯一键（整批 409）。
+     * <p><b>刻意不加 {@code FOR UPDATE}</b>（TASK-012 压测实测后改）。原来这里锁行是为了
+     * 堵住"查询与插入之间的窗口"，但实测证明它制造了更严重的问题：
+     *
+     * <p>InnoDB 在 REPEATABLE READ 下，{@code WHERE event_id IN (…)} 对<em>尚不存在</em>的行
+     * 会加<b>间隙锁</b>。事件 eventId 是 ULID——单调递增、同一毫秒内生成的前缀几乎相同，
+     * 于是并发 Worker 的 eventId 在唯一索引 {@code uk_trace_events_event_id} 上必然相邻，
+     * 各自持有的间隙互相重叠：
+     *
+     * <pre>
+     * TRX 1: HOLDS  supremum 间隙 X 锁 → 等 insert intention
+     * TRX 2: HOLDS  同上           → 等 insert intention
+     * </pre>
+     *
+     * 实测 8 并发 × 60 Run × 40 事件下这是<b>必然</b>触发的死锁，不是低概率事件。
+     *
+     * <p><b>不加锁如何仍然正确</b>：幂等的真正保证是 {@code uk_trace_events_event_id}
+     * 唯一约束，而不是这把读锁。两个请求同时"查不到"又同时插入时，
+     * 必然有一个撞唯一键——而撞唯一键的语义本来就必须被处理：
+     * 同内容重放返回 DUPLICATE，异内容返回 RESOURCE_CONFLICT。
+     * {@code WorkService.appendEvents} 按 eventId 捕获唯一键冲突并重新查询判定，
+     * 于是"查不到就插、插不上就回查"就是完整的幂等实现，不需要读锁参与。
      */
     @Select("""
             <script>
@@ -89,10 +107,9 @@ public interface TraceEventMapper {
               FROM trace_events
              WHERE event_id IN
              <foreach collection="eventIds" item="eid" open="(" separator="," close=")">#{eid}</foreach>
-               FOR UPDATE
             </script>
             """)
-    List<TraceEvent> findByEventIdsForUpdate(@Param("eventIds") List<String> eventIds);
+    List<TraceEvent> findByEventIds(@Param("eventIds") List<String> eventIds);
 
     @Select("""
             SELECT event_id
@@ -134,6 +151,16 @@ public interface TraceEventMapper {
     @Select("SELECT COUNT(*) FROM trace_events WHERE run_attempt_id = #{attemptId}")
     long countByAttempt(@Param("attemptId") String attemptId);
 
+    /**
+     * 取一页事件（按 Run），<b>已废弃，请改用 {@link #listPage} 的 keyset 游标</b>。
+     *
+     * @deprecated 保留仅为对比说明，删除于 TASK-012：无任何调用方。
+     * {@code LIMIT ? OFFSET ?} 在深翻页时必须先把 offset 之前的行全部读出再丢弃，
+     * 扫描量随页码线性增长；而 Trace 查询的真实访问路径是签名游标
+     * （{@link #listPage}），它按键集定位、恒定扫描量。
+     * 留着它等于留一个"看起来能用、用了就退化"的入口。
+     */
+    @Deprecated(since = "TASK-012")
     @Select("""
             <script>
             SELECT id,
