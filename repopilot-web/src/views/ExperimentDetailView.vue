@@ -4,7 +4,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Refresh, Upload, VideoPlay } from '@element-plus/icons-vue'
 
 import * as experimentApi from '@/api/experiments'
+import * as evaluationApi from '@/api/evaluation'
 import type {
+  EvaluationBatchStatus,
+  EvaluationBatchView,
   ExperimentStatus,
   ExperimentView,
   RunStatus,
@@ -68,7 +71,7 @@ async function loadRuns(): Promise<void> {
 }
 
 async function reload(): Promise<void> {
-  await Promise.all([loadExperiment(), loadRuns()])
+  await Promise.all([loadExperiment(), loadRuns(), loadBatches()])
 }
 
 onMounted(reload)
@@ -142,6 +145,120 @@ const statusCounts = computed(() => {
   })
   return counts
 })
+
+/* ---------------- 评测批次 ---------------- */
+
+const batches = ref<EvaluationBatchView[]>([])
+const batchLoading = ref(false)
+
+/** INITIAL 批次随实验启动创建、随实验取消；页面只允许取消重评批次。 */
+const BATCH_STATUS_TEXT: Record<EvaluationBatchStatus, string> = {
+  PENDING: '等待执行',
+  RUNNING: '评测中',
+  COMPLETED: '已完成',
+  PARTIAL_FAILED: '部分失败',
+  FAILED: '失败',
+  CANCELLED: '已取消',
+}
+
+const BATCH_STATUS_TAG: Record<
+  EvaluationBatchStatus,
+  'info' | 'primary' | 'success' | 'warning' | 'danger'
+> = {
+  PENDING: 'info',
+  RUNNING: 'primary',
+  COMPLETED: 'success',
+  PARTIAL_FAILED: 'warning',
+  FAILED: 'danger',
+  CANCELLED: 'info',
+}
+
+const TRIGGER_TEXT: Record<string, string> = {
+  INITIAL: '初始',
+  REEVALUATION: '重评',
+  MANUAL: '手动',
+}
+
+async function loadBatches(): Promise<void> {
+  if (!experimentId.value) {
+    return
+  }
+  batchLoading.value = true
+  try {
+    const page = await evaluationApi.listEvaluationBatches(experimentId.value, {
+      page: 1,
+      pageSize: 50,
+    })
+    batches.value = page.items
+  } catch (error) {
+    toastError(error, '加载评测批次失败')
+  } finally {
+    batchLoading.value = false
+  }
+}
+
+/** 新建重评批次对话框。 */
+const reevalVisible = ref(false)
+const reevalSubmitting = ref(false)
+const reevalForm = reactive({
+  planVersionId: '',
+  scope: 'ALL' as 'ALL' | 'SELECTED',
+  runIds: [] as string[],
+})
+
+const canCreateBatch = computed(() =>
+  ['QUEUED', 'RUNNING', 'COMPLETED', 'PARTIAL_FAILED'].includes(
+    experiment.value?.status ?? '',
+  ),
+)
+
+function openReevalDialog(): void {
+  reevalForm.planVersionId = experiment.value?.evaluationPlanVersionId ?? ''
+  reevalForm.scope = 'ALL'
+  reevalForm.runIds = []
+  reevalVisible.value = true
+}
+
+/** 可勾选的是当前页里已封口的 Run——跨页选择做不到就明说，不假装支持。 */
+const selectableRuns = computed(() =>
+  runs.value.filter((run) => run.status === 'EVALUATING' || run.status === 'COMPLETED'),
+)
+
+async function createReevalBatch(): Promise<void> {
+  reevalSubmitting.value = true
+  try {
+    const batch = await evaluationApi.createEvaluationBatch(experimentId.value, {
+      planVersionId: reevalForm.planVersionId,
+      triggerType: 'REEVALUATION',
+      runIds: reevalForm.scope === 'SELECTED' ? reevalForm.runIds : undefined,
+      filter: reevalForm.scope === 'ALL' ? {} : undefined,
+    })
+    reevalVisible.value = false
+    toastSuccess(`重评批次已创建（${batch.runCount} 个 Run），等待评测 Worker 领取`)
+    await loadBatches()
+  } catch (error) {
+    toastError(error, '创建重评批次失败')
+  } finally {
+    reevalSubmitting.value = false
+  }
+}
+
+async function cancelBatch(batch: EvaluationBatchView): Promise<void> {
+  try {
+    await evaluationApi.cancelEvaluationBatch(batch.id, '前端取消')
+    toastSuccess('批次已取消，未终态任务不再执行')
+    await loadBatches()
+  } catch (error) {
+    toastError(error, '取消批次失败')
+  }
+}
+
+function batchCancelable(batch: EvaluationBatchView): boolean {
+  return (
+    batch.triggerType !== 'INITIAL' &&
+    (batch.status === 'PENDING' || batch.status === 'RUNNING')
+  )
+}
 </script>
 
 <template>
@@ -233,6 +350,115 @@ const statusCounts = computed(() => {
     </el-card>
 
     <el-card class="page__card" shadow="never">
+      <template #header>
+        <div class="card-header">
+          <span>评测批次</span>
+          <span class="muted">
+            初始批次随实验启动创建；重评会新增批次，历史结果原样保留
+          </span>
+          <el-button
+            v-if="canCreateBatch"
+            style="margin-left: auto"
+            @click="openReevalDialog"
+          >
+            新建重评批次
+          </el-button>
+        </div>
+      </template>
+      <el-table v-loading="batchLoading" :data="batches" size="small" style="width: 100%">
+        <el-table-column prop="batchNo" label="批次" width="80" />
+        <el-table-column label="来源" width="90">
+          <template #default="{ row }">{{ TRIGGER_TEXT[row.triggerType] ?? row.triggerType }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="BATCH_STATUS_TAG[row.status as EvaluationBatchStatus]" effect="light">
+              {{ BATCH_STATUS_TEXT[row.status as EvaluationBatchStatus] }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="runCount" label="Run 数" width="90" />
+        <el-table-column prop="expectedJobCount" label="任务总数" width="100" />
+        <el-table-column label="任务进度（待/中/成/败/跳）" min-width="200">
+          <template #default="{ row }">
+            <span class="mono">
+              {{ row.jobs.total > 0
+                ? `${row.jobs.pending} / ${row.jobs.running} / ${row.jobs.completed} / ${row.jobs.failed} / ${row.jobs.skipped}`
+                : '-' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="方案版本" min-width="220">
+          <template #default="{ row }">
+            <span class="mono">{{ row.evaluationPlanVersionId }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="创建时间" width="170">
+          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="90" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="batchCancelable(row)"
+              link
+              type="danger"
+              @click="cancelBatch(row)"
+            >
+              取消
+            </el-button>
+          </template>
+        </el-table-column>
+        <template #empty>
+          <el-empty description="还没有评测批次（实验未提交）" />
+        </template>
+      </el-table>
+    </el-card>
+
+    <el-dialog v-model="reevalVisible" title="新建重评批次" width="560px">
+      <el-form label-width="100px">
+        <el-form-item label="方案版本">
+          <el-input v-model="reevalForm.planVersionId" placeholder="评测方案版本 ID" />
+          <div class="muted">
+            默认沿用实验创建时的方案版本；换成新版本即可对比"同一批 Run、两套算法"的结论
+          </div>
+        </el-form-item>
+        <el-form-item label="重评范围">
+          <el-radio-group v-model="reevalForm.scope">
+            <el-radio value="ALL">全部可重评 Run（已封口）</el-radio>
+            <el-radio value="SELECTED">从下方 Run 列表勾选</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="reevalForm.scope === 'SELECTED'" label="选择 Run">
+          <el-select
+            v-model="reevalForm.runIds"
+            multiple
+            filterable
+            placeholder="只列出当前页已封口的 Run"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="run in selectableRuns"
+              :key="run.id"
+              :label="`${run.caseKey ?? run.datasetCaseId} #${run.repeatIndex}（${runStatusText[run.status as RunStatus]}）`"
+              :value="run.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="reevalVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="reevalSubmitting"
+          :disabled="reevalForm.scope === 'SELECTED' && reevalForm.runIds.length === 0"
+          @click="createReevalBatch"
+        >
+          创建
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-card class="page__card" shadow="never">
       <div class="page__toolbar">
         <div class="page__toolbar-group">
           <el-select v-model="runQuery.status" placeholder="全部状态" clearable style="width: 140px">
@@ -308,6 +534,12 @@ const statusCounts = computed(() => {
 </template>
 
 <style scoped>
+.card-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
 .target-chip {
   display: inline-block;
   margin-right: 8px;

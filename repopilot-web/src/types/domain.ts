@@ -239,17 +239,50 @@ export interface JobBatchSummary {
   skipped: number
 }
 
+export type Verdict = 'PASS' | 'FAIL' | 'INDETERMINATE' | 'NOT_APPLICABLE'
+export type GeneratedBy = 'RULE' | 'TEST' | 'LLM' | 'MOCK'
+
+export interface JobResultView {
+  id: string
+  jobAttemptId: string
+  verdict: Verdict
+  /** 0~1 的归一分；缺失表示该算子不打分（如 INDETERMINATE/NOT_APPLICABLE） */
+  score?: number
+  reason?: string
+  evidence?: unknown
+  result?: unknown
+  generatedBy: GeneratedBy
+  createdAt: string
+}
+
+export interface JobAttemptView {
+  id: string
+  attemptNo: number
+  workerId: string
+  status: AttemptStatus
+  startedAt?: string
+  finishedAt?: string
+  errorCode?: string
+  errorMessage?: string
+}
+
 export interface JobView {
   id: string
   batchId: string
   batchNo: number
   evaluatorKey: string
   evaluatorVersion: number
+  evaluatorType: string
   executionOrder: number
   required: boolean
   status: JobStatus
   attemptCount: number
   errorCode?: string
+  errorMessage?: string
+  startedAt?: string
+  finishedAt?: string
+  result?: JobResultView
+  attempts: JobAttemptView[]
 }
 
 export interface RunDetail {
@@ -348,4 +381,47 @@ export interface TraceEventPage {
   nextCursor?: string
   hasMore: boolean
   scope: TraceEventScope
+}
+
+/** 评测批次状态；INITIAL 批次随实验启动创建，REEVALUATION/MANUAL 走批次接口。 */
+export type EvaluationBatchStatus =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'COMPLETED'
+  | 'PARTIAL_FAILED'
+  | 'FAILED'
+  | 'CANCELLED'
+
+export interface EvaluationJobCounts {
+  total: number
+  pending: number
+  running: number
+  completed: number
+  failed: number
+  skipped: number
+}
+
+export interface EvaluationBatchView {
+  id: string
+  experimentId: string
+  evaluationPlanVersionId: string
+  batchNo: number
+  /** INITIAL 只能由实验启动事务创建，接口只接受 REEVALUATION / MANUAL */
+  triggerType: string
+  parentBatchId?: string
+  status: EvaluationBatchStatus
+  expectedJobCount: number
+  runCount: number
+  jobs: EvaluationJobCounts
+  selection?: unknown
+  createdAt: string
+  startedAt?: string
+  finishedAt?: string
+}
+
+export interface EvaluationBatchPage {
+  items: EvaluationBatchView[]
+  total: number
+  limit: number
+  offset: number
 }

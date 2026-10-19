@@ -5,7 +5,14 @@ import { ArrowLeft, Refresh } from '@element-plus/icons-vue'
 
 import * as experimentApi from '@/api/experiments'
 import TracePanel from '@/components/TracePanel.vue'
-import type { AttemptStatus, JobStatus, RunDetail, RunMode, RunStatus } from '@/types/domain'
+import type {
+  AttemptStatus,
+  JobStatus,
+  RunDetail,
+  RunMode,
+  RunStatus,
+  Verdict,
+} from '@/types/domain'
 import { formatTime, stringifyJson, toastError } from '@/utils/feedback'
 
 const route = useRoute()
@@ -32,6 +39,21 @@ const JOB_STATUS_TEXT: Record<JobStatus, string> = {
   COMPLETED: '已完成',
   FAILED: '评测失败',
   SKIPPED: '已跳过',
+}
+
+/** 判定文案：INDETERMINATE 不是"没评"，是"评了但无法下结论"；页面必须区分这两者。 */
+const VERDICT_TEXT: Record<Verdict, string> = {
+  PASS: '通过',
+  FAIL: '未通过',
+  INDETERMINATE: '无法判定',
+  NOT_APPLICABLE: '不适用',
+}
+
+const VERDICT_TAG: Record<Verdict, 'success' | 'danger' | 'warning' | 'info'> = {
+  PASS: 'success',
+  FAIL: 'danger',
+  INDETERMINATE: 'warning',
+  NOT_APPLICABLE: 'info',
 }
 
 async function load(): Promise<void> {
@@ -182,7 +204,7 @@ const traceCoverage = computed(() => {
       <template #header>
         <div class="card-header">
           <span>评测任务</span>
-          <span class="muted">按批次分组；本阶段只生成 PENDING，不写入任何评分</span>
+          <span class="muted">按批次分组；重评会新增批次，历史结果原样保留</span>
         </div>
       </template>
       <el-table :data="batches" size="small" style="width: 100%">
@@ -203,17 +225,98 @@ const traceCoverage = computed(() => {
         </template>
       </el-table>
 
-      <el-table :data="jobs" size="small" style="width: 100%; margin-top: 12px">
+      <el-table :data="jobs" size="small" style="width: 100%; margin-top: 12px" row-key="id">
+        <el-table-column type="expand">
+          <template #default="{ row }">
+            <div class="job-expand">
+              <div v-if="row.result" class="job-expand__block">
+                <div class="muted">评分依据（evidence）——只引用本 Run 的事件、附件或数据集字段</div>
+                <pre class="json-block">{{ stringifyJson(row.result.evidence) || '（无）' }}</pre>
+                <div class="muted" style="margin-top: 8px">结构化结果（result）</div>
+                <pre class="json-block">{{ stringifyJson(row.result.result) || '（无）' }}</pre>
+              </div>
+              <div v-else class="muted">还没有结果；失败的任务展开后只能看到下面的尝试历史。</div>
+              <div class="muted" style="margin-top: 8px">评测尝试历史（重试不覆盖旧记录）</div>
+              <el-table :data="row.attempts" size="small" border>
+                <el-table-column prop="attemptNo" label="#" width="60" />
+                <el-table-column prop="workerId" label="Worker" min-width="140" />
+                <el-table-column label="状态" width="100">
+                  <template #default="{ row: att }">
+                    {{ ATTEMPT_STATUS_TEXT[att.status as AttemptStatus] }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="开始" width="170">
+                  <template #default="{ row: att }">{{ formatTime(att.startedAt) }}</template>
+                </el-table-column>
+                <el-table-column label="结束" width="170">
+                  <template #default="{ row: att }">{{ formatTime(att.finishedAt) }}</template>
+                </el-table-column>
+                <el-table-column label="错误" min-width="200">
+                  <template #default="{ row: att }">
+                    <span v-if="att.errorCode" class="mono">{{ att.errorCode }}</span>
+                    <span v-if="att.errorMessage" class="muted"> · {{ att.errorMessage }}</span>
+                    <span v-if="!att.errorCode && !att.errorMessage" class="muted">-</span>
+                  </template>
+                </el-table-column>
+                <template #empty>
+                  <el-empty description="还没有 Worker 领取过" :image-size="48" />
+                </template>
+              </el-table>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column prop="executionOrder" label="顺序" width="70" />
-        <el-table-column prop="evaluatorKey" label="算子" min-width="200" />
-        <el-table-column prop="evaluatorVersion" label="算子版本" width="100" />
-        <el-table-column label="必需" width="80">
+        <el-table-column label="算子" min-width="200">
+          <template #default="{ row }">
+            <span class="mono">{{ row.evaluatorKey }}</span>
+            <span class="muted"> v{{ row.evaluatorVersion }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="类型" width="110">
+          <template #default="{ row }">
+            <span class="mono">{{ row.evaluatorType }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="必需" width="70">
           <template #default="{ row }">{{ row.required ? '是' : '否' }}</template>
         </el-table-column>
         <el-table-column label="状态" width="110">
           <template #default="{ row }">{{ JOB_STATUS_TEXT[row.status as JobStatus] }}</template>
         </el-table-column>
-        <el-table-column prop="attemptCount" label="尝试" width="80" />
+        <el-table-column label="判定" width="110">
+          <template #default="{ row }">
+            <el-tag
+              v-if="row.result"
+              :type="VERDICT_TAG[row.result.verdict as Verdict]"
+              size="small"
+              effect="plain"
+            >
+              {{ VERDICT_TEXT[row.result.verdict as Verdict] }}
+            </el-tag>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="分数" width="90">
+          <template #default="{ row }">
+            <span v-if="row.result && row.result.score != null" class="mono">
+              {{ Number(row.result.score).toFixed(3) }}
+            </span>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="结论" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.result?.reason">{{ row.result.reason }}</span>
+            <span v-else-if="row.errorMessage" class="muted">{{ row.errorMessage }}</span>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="开始时间" width="170">
+          <template #default="{ row }">{{ formatTime(row.startedAt) }}</template>
+        </el-table-column>
+        <el-table-column label="结束时间" width="170">
+          <template #default="{ row }">{{ formatTime(row.finishedAt) }}</template>
+        </el-table-column>
         <template #empty>
           <el-empty description="还没有评测任务" />
         </template>
@@ -247,6 +350,14 @@ const traceCoverage = computed(() => {
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
+}
+
+.job-expand {
+  padding: 4px 8px;
+}
+
+.job-expand__block {
+  margin-bottom: 8px;
 }
 
 .json-grid {
