@@ -8,6 +8,7 @@ import TracePanel from '@/components/TracePanel.vue'
 import type {
   AttemptStatus,
   JobStatus,
+  JobView,
   RunDetail,
   RunMode,
   RunStatus,
@@ -54,6 +55,50 @@ const VERDICT_TAG: Record<Verdict, 'success' | 'danger' | 'warning' | 'info'> = 
   FAIL: 'danger',
   INDETERMINATE: 'warning',
   NOT_APPLICABLE: 'info',
+}
+
+/**
+ * Judge 的审计字段一律从 result 里取，缺失就显示"未知"。
+ * 绝不因为字段缺失就显示 0 或空字符串——那会把"没拿到"说成"确实是 0"。
+ */
+function judgeFact(row: JobView, key: string): string {
+  const result = row.result?.result as Record<string, unknown> | undefined
+  const value = result?.[key]
+  return value == null ? '' : String(value)
+}
+
+function judgeQuotes(row: JobView): string[] {
+  const result = row.result?.result as Record<string, unknown> | undefined
+  const quotes = result?.evidenceQuotes
+  return Array.isArray(quotes) ? quotes.map((item) => String(item)) : []
+}
+
+function judgeAttempts(row: JobView): string {
+  const result = row.result?.result as Record<string, unknown> | undefined
+  const attempts = result?.attempts
+  if (!Array.isArray(attempts)) {
+    return '-'
+  }
+  return `${attempts.length} 次（含重试）`
+}
+
+function judgeCost(row: JobView): string {
+  const result = row.result?.result as Record<string, unknown> | undefined
+  const cost = result?.costUsd
+  const currency = result?.currency
+  if (typeof cost !== 'number' || !Number.isFinite(cost)) {
+    return ''
+  }
+  return `${currency ?? 'USD'} ${cost.toFixed(6)}`
+}
+
+function judgeElapsed(row: JobView): string {
+  const result = row.result?.result as Record<string, unknown> | undefined
+  const elapsed = result?.elapsedMs
+  if (typeof elapsed !== 'number' || !Number.isFinite(elapsed)) {
+    return ''
+  }
+  return elapsed >= 1000 ? `${(elapsed / 1000).toFixed(2)} 秒` : `${Math.round(elapsed)} 毫秒`
 }
 
 async function load(): Promise<void> {
@@ -230,6 +275,49 @@ const traceCoverage = computed(() => {
           <template #default="{ row }">
             <div class="job-expand">
               <div v-if="row.result" class="job-expand__block">
+                <template v-if="row.result.generatedBy === 'LLM'">
+                  <div class="judge-banner">
+                    本结论由模型 Judge 依据固定 rubric 给出，属于「模型判断」，不是规则计算的客观事实。
+                  </div>
+                  <el-descriptions :column="2" size="small" border class="judge-facts">
+                    <el-descriptions-item label="评分标准 rubric">
+                      <span class="mono">{{ judgeFact(row, 'rubricKey') || '-' }}</span>
+                    </el-descriptions-item>
+                    <el-descriptions-item label="prompt 版本">
+                      <span class="mono">{{ judgeFact(row, 'promptVersion') || '-' }}</span>
+                    </el-descriptions-item>
+                    <el-descriptions-item label="模型">
+                      <span class="mono">{{ judgeFact(row, 'model') || '-' }}</span>
+                      <el-tag
+                        v-if="judgeFact(row, 'provider') === 'stub'"
+                        class="source-tag"
+                        size="small"
+                        type="danger"
+                        effect="plain"
+                      >测试桩，非真实调用</el-tag>
+                    </el-descriptions-item>
+                    <el-descriptions-item label="调用次数">
+                      {{ judgeAttempts(row) }}
+                    </el-descriptions-item>
+                    <el-descriptions-item label="Judge 成本">
+                      <span v-if="judgeCost(row)">{{ judgeCost(row) }}</span>
+                      <span v-else class="muted">未知（供应商未回报）</span>
+                    </el-descriptions-item>
+                    <el-descriptions-item label="调用耗时">
+                      <span v-if="judgeElapsed(row)">{{ judgeElapsed(row) }}</span>
+                      <span v-else class="muted">-</span>
+                    </el-descriptions-item>
+                  </el-descriptions>
+                  <div class="muted" style="margin-top: 8px">
+                    模型引用的原文片段（引自被测输出，平台不代为扩写）
+                  </div>
+                  <ul v-if="judgeQuotes(row).length" class="judge-quotes">
+                    <li v-for="(quote, index) in judgeQuotes(row)" :key="index" class="mono">
+                      {{ quote }}
+                    </li>
+                  </ul>
+                  <div v-else class="muted">模型没有引用具体片段。</div>
+                </template>
                 <div class="muted">评分依据（evidence）——只引用本 Run 的事件、附件或数据集字段</div>
                 <pre class="json-block">{{ stringifyJson(row.result.evidence) || '（无）' }}</pre>
                 <div class="muted" style="margin-top: 8px">结构化结果（result）</div>
@@ -283,7 +371,7 @@ const traceCoverage = computed(() => {
         <el-table-column label="状态" width="110">
           <template #default="{ row }">{{ JOB_STATUS_TEXT[row.status as JobStatus] }}</template>
         </el-table-column>
-        <el-table-column label="判定" width="110">
+        <el-table-column label="判定" width="150">
           <template #default="{ row }">
             <el-tag
               v-if="row.result"
@@ -294,6 +382,20 @@ const traceCoverage = computed(() => {
               {{ VERDICT_TEXT[row.result.verdict as Verdict] }}
             </el-tag>
             <span v-else class="muted">-</span>
+            <el-tooltip
+              v-if="row.result?.generatedBy === 'LLM'"
+              content="该结论由模型 Judge 给出，不是规则计算的客观事实"
+              placement="top"
+            >
+              <el-tag class="source-tag" size="small" type="warning" effect="plain">模型判断</el-tag>
+            </el-tooltip>
+            <el-tooltip
+              v-else-if="row.result?.generatedBy === 'TEST'"
+              content="该结论来自执行可信测试命令的退出码"
+              placement="top"
+            >
+              <el-tag class="source-tag" size="small" type="info" effect="plain">测试执行</el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column label="分数" width="90">
@@ -358,6 +460,35 @@ const traceCoverage = computed(() => {
 
 .job-expand__block {
   margin-bottom: 8px;
+}
+
+/* 模型判断的提示条：与规则结论视觉上必须可区分，不能混为一谈 */
+.judge-banner {
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--el-color-warning);
+  background: var(--el-color-warning-light-9);
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+}
+
+.judge-facts {
+  margin-bottom: 8px;
+}
+
+.judge-quotes {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+
+.judge-quotes li {
+  margin-bottom: 2px;
+}
+
+.source-tag {
+  margin-left: 4px;
 }
 
 .json-grid {
