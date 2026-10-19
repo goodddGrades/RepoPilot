@@ -116,6 +116,10 @@ const observationText = computed(() => stringifyJson(detail.value?.observationMe
         <el-descriptions-item label="输出附件">
           <span class="mono">{{ detail?.outputArtifactId ?? '-' }}</span>
         </el-descriptions-item>
+        <el-descriptions-item v-if="detail?.sourceSystem" label="来源">
+          <span class="mono">{{ detail.sourceSystem }}</span>
+          <span v-if="detail.sourceRecordId" class="muted"> · {{ detail.sourceRecordId }}</span>
+        </el-descriptions-item>
       </el-descriptions>
     </el-card>
 

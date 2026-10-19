@@ -66,6 +66,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '实验详情' },
       },
       {
+        path: 'imports',
+        name: 'imports',
+        component: () => import('@/views/ImportListView.vue'),
+        meta: { title: '离线轨迹导入' },
+      },
+      {
         path: 'runs/:id',
         name: 'run-detail',
         component: () => import('@/views/RunDetailView.vue'),

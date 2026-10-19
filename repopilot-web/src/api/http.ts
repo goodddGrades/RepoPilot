@@ -145,6 +145,21 @@ export async function uploadFile<T>(
 ): Promise<T> {
   const form = new FormData()
   form.append('file', file)
+  return uploadForm<T>(url, form, idempotencyKey, onProgress)
+}
+
+/**
+ * 上传 multipart 表单。
+ *
+ * 与 {@link uploadFile} 的区别只在表单可以带额外字段（如 {@code artifactType}）：
+ * 单独抽出来是为了不在调用方手工拼 FormData 再各自处理进度与错误。
+ */
+export async function uploadForm<T>(
+  url: string,
+  form: FormData,
+  idempotencyKey?: string,
+  onProgress?: (percent: number) => void,
+): Promise<T> {
   const response = await http.post<ApiResponse<T>>(url, form, {
     headers: writeHeaders(idempotencyKey),
     timeout: 120000,

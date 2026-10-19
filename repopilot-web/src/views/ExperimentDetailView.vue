@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Refresh, VideoPlay } from '@element-plus/icons-vue'
+import { ArrowLeft, Refresh, Upload, VideoPlay } from '@element-plus/icons-vue'
 
 import * as experimentApi from '@/api/experiments'
 import type {
@@ -117,6 +117,11 @@ async function cancel(): Promise<void> {
   }
 }
 
+/** 导入页带上实验 id：省掉用户在下拉里再找一遍。 */
+function goImport(): void {
+  void router.push({ path: '/imports', query: { experimentId: experimentId.value } })
+}
+
 function openRun(row: RunView): void {
   void router.push(`/runs/${row.id}`)
 }
@@ -148,7 +153,15 @@ const statusCounts = computed(() => {
         <p class="page__subtitle">
           <span class="mono">{{ experimentId }}</span>
           <span v-if="experiment"> · {{ experiment.mode === 'ONLINE' ? '在线' : '离线' }}</span>
-          <span v-if="experiment"> · 计划 {{ experiment.expectedRunCount }} 个 Run</span>
+          <span v-if="experiment && experiment.mode === 'ONLINE'">
+            · 计划 {{ experiment.expectedRunCount }} 个 Run
+          </span>
+          <span v-if="experiment && experiment.mode === 'OFFLINE'">
+            · 已导入 {{ experiment.importedRunCount }} / 计划 {{ experiment.expectedRunCount }} 个 Run
+            <template v-if="experiment.missingRunCount > 0">
+              （缺 {{ experiment.missingRunCount }} 个槽位）
+            </template>
+          </span>
         </p>
       </div>
       <div class="page__toolbar-group">
@@ -193,13 +206,30 @@ const statusCounts = computed(() => {
         </el-descriptions-item>
       </el-descriptions>
       <el-alert
-        v-if="experiment.status === 'DRAFT'"
+        v-if="experiment.status === 'DRAFT' && experiment.mode === 'ONLINE'"
         style="margin-top: 12px"
         type="info"
         show-icon
         :closable="false"
         title="草稿阶段还没有 Run。点「提交」会校验版本状态、Runner 能力与数量上限，然后一次性生成槽位。"
       />
+      <el-alert
+        v-if="experiment.status === 'DRAFT' && experiment.mode === 'OFFLINE'"
+        style="margin-top: 12px"
+        type="info"
+        show-icon
+        :closable="false"
+        title="离线实验的 Run 来自导入的历史轨迹，不会由平台生成。缺失的槽位只记录为缺失，不补造标准答案。"
+      >
+        <template #default>
+          <div style="margin-top: 6px">
+            <el-button type="primary" link :icon="Upload" @click="goImport">去导入轨迹</el-button>
+            <span class="muted" style="margin-left: 8px">
+              已导入 {{ experiment.importedRunCount }} 条，还差 {{ experiment.missingRunCount }} 个槽位
+            </span>
+          </div>
+        </template>
+      </el-alert>
     </el-card>
 
     <el-card class="page__card" shadow="never">

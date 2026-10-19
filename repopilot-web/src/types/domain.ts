@@ -183,6 +183,10 @@ export interface ExperimentView {
   evaluationPlanVersionId: string
   config: unknown
   expectedRunCount: number
+  /** 详情接口返回：已导入的 Run 数（列表页为 0，不逐行统计）。离线实验看这个 */
+  importedRunCount: number
+  /** 详情接口返回：完整槽位里还差多少条轨迹；在线实验恒为 0 */
+  missingRunCount: number
   targets: ExperimentTargetView[]
   startedAt?: string
   finishedAt?: string
@@ -250,6 +254,9 @@ export interface JobView {
 
 export interface RunDetail {
   run: RunView
+  /** 只有离线导入的 Run 有来源；在线执行没有"来源记录"这回事 */
+  sourceSystem?: string
+  sourceRecordId?: string
   output?: unknown
   outputArtifactId?: string
   usage?: unknown
@@ -263,4 +270,50 @@ export interface RunDetail {
 export interface RunJobSummary {
   batches: JobBatchSummary[]
   jobs: JobView[]
+}
+
+/** 导入批次状态；OFFLINE_RUNS 允许 PARTIAL_FAILED，DATASET_CASES 只有 COMPLETED/FAILED。 */
+export type ImportStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'PARTIAL_FAILED' | 'FAILED' | 'CANCELLED'
+export type ImportType = 'DATASET_CASES' | 'OFFLINE_RUNS'
+
+export interface ImportBatchView {
+  id: string
+  importType: ImportType
+  status: ImportStatus
+  datasetVersionId: string
+  experimentId?: string
+  fileArtifactId: string
+  totalCount: number
+  /** totalCount 只在批次终态才有意义；处理中为 false，前端不要拿它算百分比 */
+  totalKnown: boolean
+  processedCount: number
+  successCount: number
+  failedCount: number
+  /** success 的子集：同一来源记录被重复导入时计入这里 */
+  duplicateCount: number
+  lastLineNo: number
+  startedAt?: string
+  finishedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ImportErrorView {
+  lineNo: number
+  errorCode: string
+  errorMessage: string
+}
+
+export type ArtifactType = 'OUTPUT' | 'STDOUT' | 'EVIDENCE' | 'IMPORT_FILE'
+
+/** 服务端刻意不回传 objectKey：存储路径属于实现细节。 */
+export interface ArtifactView {
+  id: string
+  runId?: string
+  artifactType: ArtifactType
+  contentType: string
+  sizeBytes: number
+  sha256: string
+  status: string
+  createdAt: string
 }

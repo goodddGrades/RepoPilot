@@ -6,6 +6,7 @@ import {
   SetUp,
   Share,
   Stamp,
+  Upload,
   VideoPlay,
 } from '@element-plus/icons-vue'
 import type { Component } from 'vue'
@@ -34,6 +35,7 @@ export const navigationItems: NavItem[] = [
   { path: '/evaluation-plans', title: '评测方案', icon: DataAnalysis, available: true },
   { path: '/evaluators', title: '算子清单', icon: SetUp, available: true },
   { path: '/experiments', title: '在线 / 离线评测', icon: VideoPlay, available: true },
+  { path: '/imports', title: '离线轨迹导入', icon: Upload, available: true },
   { path: '/traces', title: '轨迹分析', icon: Share, available: false },
   { path: '/annotations', title: '标注与报告', icon: Stamp, available: false },
 ]
