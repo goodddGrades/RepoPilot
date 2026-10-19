@@ -14,6 +14,8 @@ from typing import Any
 from app.client import WorkerClient
 from app.common.logging import get_logger
 from app.config import Settings, get_settings
+from app.evaluator import registry
+from app.evaluator.base import Evaluator
 from app.poller import WorkerPoller
 from app.runner.base import Runner
 from app.runner.mock import MockRunner
@@ -21,12 +23,25 @@ from app.runner.mock import MockRunner
 log = get_logger("app.runtime")
 
 
-def build_runner(settings: Settings) -> Runner:
-    """按能力声明构建 Runner；没有可用实现时直接失败，不静默降级。"""
+def build_runner(settings: Settings) -> Runner | None:
+    """按能力声明构建 Runner；声明了执行能力却没有实现时直接失败，不静默降级。
+
+    纯评测 Worker（只声明 ``EVAL:*``）没有 Runner，这是合法配置：
+    它领取评测任务，不参与 Agent 执行。
+    """
     if "RUN:MOCK" in settings.capabilities:
         return MockRunner(settings.mock_scenario,
                           fail_first_attempt=settings.mock_fail_first_attempt)
-    raise RuntimeError(f"没有可用的 Runner 实现，capabilities={settings.capabilities}")
+    if any(capability.upper().startswith("RUN:") for capability in settings.capabilities):
+        raise RuntimeError(f"没有可用的 Runner 实现，capabilities={settings.capabilities}")
+    return None
+
+
+def build_evaluators(settings: Settings) -> dict[str, Evaluator]:
+    """把 ``EVAL:<key>`` 能力解析成算子实现；未实现的 key 让启动失败。"""
+    keys = [capability.split(":", 1)[1] for capability in settings.capabilities
+            if capability.upper().startswith("EVAL:")]
+    return registry.resolve(keys) if keys else {}
 
 
 class WorkerRuntime:
@@ -34,7 +49,10 @@ class WorkerRuntime:
         self.settings = settings
         self.client = WorkerClient(settings.server_base_url, settings.worker_token)
         self.runner = build_runner(settings)
-        self.poller = WorkerPoller(self.client, self.runner, settings)
+        self.evaluators = build_evaluators(settings)
+        if self.runner is None and not self.evaluators:
+            raise RuntimeError(f"没有声明任何可用能力，capabilities={settings.capabilities}")
+        self.poller = WorkerPoller(self.client, self.runner, settings, evaluators=self.evaluators)
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -76,8 +94,9 @@ class WorkerRuntime:
         return {
             "workerId": self.settings.worker_id,
             "capabilities": self.settings.capabilities,
-            "runner": self.runner.name,
+            "runner": getattr(self.runner, "name", None),
             "scenario": getattr(self.runner, "scenario", None),
+            "evaluators": sorted(self.evaluators),
             "backgroundRunning": self._thread is not None and self._thread.is_alive(),
             "lastSummary": self.last_summary,
         }

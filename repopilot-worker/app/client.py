@@ -89,6 +89,10 @@ class WorkerClient:
         })
         return data.get("tasks") or []
 
+    def get(self, path: str) -> dict[str, Any]:
+        """读取相对路径（例如评测输入里的 eventsUrl）。"""
+        return self._request("GET", path)
+
     def heartbeat(self, attempt_id: str, lease_token: str) -> dict[str, Any]:
         return self._request("POST", f"/internal/v1/run-attempts/{attempt_id}/heartbeat",
                              {"leaseToken": lease_token})
@@ -123,6 +127,39 @@ class WorkerClient:
             "leaseToken": lease_token,
             "errorCode": error_code,
             "errorMessage": error_message,
+            "retryableHint": retryable_hint,
+            "usage": usage,
+        })
+
+    # ------------------------------------------------------------------ 评测（TASK-007）
+
+    def job_heartbeat(self, attempt_id: str, lease_token: str) -> dict[str, Any]:
+        return self._request("POST", f"/internal/v1/job-attempts/{attempt_id}/heartbeat",
+                             {"leaseToken": lease_token})
+
+    def job_complete(self, attempt_id: str, lease_token: str, *, verdict: str,
+                     score: float | None, reason: str, evidence: list[dict[str, Any]],
+                     result: dict[str, Any], generated_by: str,
+                     usage: dict[str, Any] | None = None) -> dict[str, Any]:
+        """提交评测结论。``verdict=FAIL`` 是质量失败，仍然是一次正常完成。"""
+        return self._request("POST", f"/internal/v1/job-attempts/{attempt_id}/complete", {
+            "leaseToken": lease_token,
+            "verdict": verdict,
+            "score": score,
+            "reason": reason,
+            "evidence": evidence,
+            "result": result,
+            "generatedBy": generated_by,
+            "usage": usage,
+        })
+
+    def job_fail(self, attempt_id: str, lease_token: str, *, error_code: str,
+                 error_message: str, retryable_hint: bool,
+                 usage: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._request("POST", f"/internal/v1/job-attempts/{attempt_id}/fail", {
+            "leaseToken": lease_token,
+            "errorCode": error_code,
+            "errorMessage": error_message[:1024],
             "retryableHint": retryable_hint,
             "usage": usage,
         })
