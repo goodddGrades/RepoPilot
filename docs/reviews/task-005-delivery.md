@@ -212,7 +212,7 @@ export REPOPILOT_IT_DB_HOST=127.0.0.1 REPOPILOT_IT_DB_PORT=13306 REPOPILOT_IT_DB
 
 ## 7. 提交
 
-本任务 4 个本地提交，`origin/develop..HEAD` 共 4 个提交 / 38 个文件：
+本任务 4 个功能提交 + 1 个 CI 补记提交；前 4 个合计 38 个文件（4634+/73−），补记提交只改本文件：
 
 | Commit | 内容 |
 | --- | --- |
@@ -220,6 +220,23 @@ export REPOPILOT_IT_DB_HOST=127.0.0.1 REPOPILOT_IT_DB_PORT=13306 REPOPILOT_IT_DB
 | `96e2c24` | test：真实 MySQL 集成测试（基类 + 18 条用例）与测试配置开关 |
 | `c71d7bb` | feat：前端导入页、实验详情缺失槽位、Run 详情来源 |
 | docs 提交（即本文件所在提交，amend 后哈希会变化，故不写自身） | docs：OpenAPI、演示脚本、示例 taskType 修正、本报告 |
+
+## 8. CI 实跑（GitHub Actions）
+
+推送 `41fc2d5..7c0606c`（fast-forward，未 force）后，run **39227535989** 的 5 个 Job 全部 `success`：
+
+| Job | 结果 | 实测数字 |
+| --- | --- | --- |
+| 后端（MySQL 8.0.36 + RabbitMQ） | success | 单元 **75** / 集成 **124** / **0 skipped** |
+| 后端（MySQL 8.0 + RabbitMQ） | success | 单元 **75** / 集成 **124** / **0 skipped** |
+| Web（构建） | success | 1728 modules transformed，`built in 5.09s` |
+| 设计字典自检 | success | `OK：76 个 Java 文件与字典一致（28 个 Mapper）` |
+| Worker（pytest） | success | **28 passed**, 1 warning（0.42s） |
+
+两条 MySQL 腿与本地 `./mvnw -B verify` 的数字完全一致，说明本机隔离实例（8.0.22）与 CI 的
+8.0 / 8.0.36 在本次改动范围内行为相同。未创建、未合并 PR。
+
+以上结果对应代码提交 `7c0606c`；本报告随后仅追加该段，不含任何代码改动。
 
 核对方式：`git log --oneline origin/develop..HEAD`、`git diff origin/develop..HEAD --stat`
 （38 files changed, 4634 insertions, 73 deletions）；工作区干净（`git status --short` 无输出）。
