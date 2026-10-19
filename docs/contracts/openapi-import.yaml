@@ -18,8 +18,8 @@ info:
     依据是可靠性设计：`DATASET_CASES` 只可能 `COMPLETED/FAILED`，`PARTIAL_FAILED`
     是给离线轨迹行级失败保留的状态。
 
-    `GET /runs/{id}/events` 仍属 TASK-006 的游标检索与回放范围（cursor 编码、签名、
-    `allAttempts` 语义），本轮不实现，避免给出一个半成品的轨迹读取接口。
+    `GET /runs/{id}/events` 属于 TASK-006，已在 `openapi-trace.yaml` 中定义（游标编码、签名、
+    `allAttempts` 语义），本文件不重复描述。本文件产出的离线 Run 与在线 Run 共用该读取接口。
 servers:
   - url: /
 paths:

@@ -1,0 +1,163 @@
+openapi: 3.1.0
+info:
+  title: RepoPilot 统一 Trace 查询与回放 API（TASK-006）
+  version: 1.0.0
+  description: |
+    在线执行与离线导入共用同一条轨迹读取路径。
+
+    对应实现：
+    - `TraceQueryService`（范围解析、单页上界、附件归属过滤）
+    - `TraceCursor` + `CursorSigner`（`(occurredAt, id)` 键集游标与 HMAC 签名）
+    - `RunController#events`、`TraceEventMapper#listPage`
+
+    语义要点：
+    1. **排序**：`occurredAt` 升序，同一毫秒用数据库行 id 升序平局；不用页码分页——
+       迟到事件会插入旧时间段，页码会产生重复与漏行。
+    2. **游标**：编码 `(occurredAt, id)`、Run ID 与过滤条件摘要（attemptId/allAttempts/eventType），
+       并附 HMAC 签名。换 Run、换过滤条件或改动内容一律 400，必须从第一页重查。
+    3. **Attempt 范围**：默认读接受尝试；执行中退化为当前尝试；离线 Run 没有 Attempt，
+       不做 Attempt 过滤，也不伪造。`allAttempts=true` 仅用于排障，会混入失败尝试。
+    4. **上界**：单页条数默认 100、最大 500；单页载荷字节数还有 4 MiB 预算，
+       超出时提前收尾并返回 `hasMore=true`，不静默丢弃尾部数据。
+    5. **附件**：事件里的 `artifactId` 只在该附件确实归属本 Run 时返回，跨 Run 引用置空——
+       脏数据不会因为出现在列表里就变成"可点开的证据"。
+servers:
+  - url: /
+paths:
+  /api/v1/runs/{id}/events:
+    get:
+      operationId: listRunEvents
+      summary: 按游标读取一条 Run 的轨迹事件
+      description: |
+        在线与离线 Run 使用同一接口。未知 Run 返回 404；非法 `limit`、`eventType`、
+        `attemptId` 或游标返回 400（`errors[].field` 指向具体参数）。
+
+        注意：`hasMore=true` 时一定返回 `nextCursor`；`hasMore=false` 时不返回游标。
+        活跃 Run 的轨迹可能继续追加，翻页结果只代表"当前可见数据"，封口后应重新读取。
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - name: cursor
+          in: query
+          required: false
+          description: 上一页返回的 `nextCursor`；省略表示第一页
+          schema: { type: string, maxLength: 512 }
+        - name: limit
+          in: query
+          required: false
+          description: 单页条数
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - name: attemptId
+          in: query
+          required: false
+          description: |
+            只看某次执行尝试。必须属于本条 Run，否则 400。
+            离线 Run 没有 Attempt，传入任何值都会 400。
+          schema: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        - name: eventType
+          in: query
+          required: false
+          description: |
+            事件类型，1~64 位大写字母/数字/下划线。形状合法但不存在的类型返回空页
+            （新适配器可能引入注册表之外的类型，不能因为"没见过"就报 400）。
+          schema: { type: string, pattern: '^[A-Z][A-Z0-9_]{0,63}$' }
+        - name: allAttempts
+          in: query
+          required: false
+          description: |
+            排障口径：合并该 Run 的全部尝试，失败尝试的事件也会出现。
+            与 `attemptId` 互斥；对离线 Run 是空操作。
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: 一页事件
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/TraceEventPage' }
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  parameters:
+    RunId:
+      in: path
+      name: id
+      required: true
+      schema: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+
+  responses:
+    ValidationError:
+      description: 参数或游标不合法（`VALIDATION_ERROR`），`errors[].field` 指向 cursor/limit/attemptId/eventType
+      content:
+        application/json:
+          schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+    NotFound:
+      description: Run 不存在（`RESOURCE_NOT_FOUND`）
+      content:
+        application/json:
+          schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+
+  schemas:
+    TraceEvent:
+      type: object
+      required: [eventId, eventType, occurredAt]
+      description: |
+        `payload` 是上游观测数据，前端只能转义展示，不能当作 HTML/脚本执行。
+        缺失字段一律缺省（全局 NON_NULL 序列化），不写 null 占位。
+      properties:
+        eventId: { type: string }
+        attemptId:
+          allOf:
+            - $ref: './openapi-common.yaml#/components/schemas/Ulid'
+          description: 离线事件没有执行尝试，该字段缺省
+        eventType: { type: string, maxLength: 64 }
+        sequenceNo: { type: [integer, 'null'], minimum: 0 }
+        occurredAt: { type: string, format: date-time }
+        traceId:
+          type: [string, 'null']
+          description: 只有上游提供了合法 OTel Trace ID 才存在；不伪造
+        spanId: { type: [string, 'null'] }
+        parentSpanId:
+          type: [string, 'null']
+          description: 父 span 可能不在本页甚至不在本 Run，前端据此显示"缺少父节点"
+        sourceEventId: { type: [string, 'null'], maxLength: 128 }
+        artifactId:
+          allOf:
+            - $ref: './openapi-common.yaml#/components/schemas/Ulid'
+          description: 仅当附件确实归属本 Run 时返回
+        payload: { type: [object, 'null'] }
+
+    TraceEventScope:
+      type: object
+      required: [allAttempts, resolvedFrom]
+      properties:
+        attemptId:
+          allOf:
+            - $ref: './openapi-common.yaml#/components/schemas/Ulid'
+        allAttempts: { type: boolean }
+        eventType: { type: string }
+        resolvedFrom:
+          type: string
+          enum: [REQUESTED, ALL, ACCEPTED, ACTIVE, NONE]
+          description: |
+            本次实际使用的范围来源：显式 attemptId / allAttempts / 接受尝试 / 执行中尝试 /
+            没有可用尝试（离线或尚未领取）。前端据此解释"为什么没有尝试可切换"。
+
+    TraceEventPage:
+      type: object
+      required: [items, hasMore, scope]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/TraceEvent' }
+        nextCursor:
+          type: string
+          description: 'hasMore=true 时必填；换过滤条件后不可复用'
+        hasMore: { type: boolean }
+        scope: { $ref: '#/components/schemas/TraceEventScope' }
