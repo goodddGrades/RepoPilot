@@ -48,8 +48,13 @@ def main() -> int:
     if MODE == "child":
         import subprocess
         marker = os.environ.get("STUB_CHILD_MARKER", "survivor.txt")
+        # 延迟必须远大于"超时触发 → 进程树 kill 完成"所需的时间。
+        # 默认 8 秒：机器有负载时 taskkill 可能要几秒才真正落到孙进程上，
+        # 余量不足会让本用例变成"测机器负载"而不是"测进程组清理"。
+        # 用例侧会等过这个延迟点再断言，因此余量调大不会削弱断言。
+        delay = os.environ.get("STUB_CHILD_DELAY_SECONDS", "8")
         # 用 json.dumps 传路径：Windows 反斜杠不能直接进代码字符串
-        code = ("import time, pathlib; time.sleep(2); "
+        code = (f"import time, pathlib; time.sleep({delay}); "
                 f"pathlib.Path({json.dumps(marker)}).write_text('alive')")
         subprocess.Popen([sys.executable, "-c", code])
         time.sleep(300)

@@ -148,6 +148,19 @@ CI 里 Judge 与 Runner 走**确定性桩**（`WORKER_JUDGE_PROVIDER=stub` 与
 4. **模型自报 JSON 为数字时覆盖 `answer`** → 输出结构随模型摇摆，算子与前端都会崩。
 5. **Windows 上进程刚退出即删目录必然失败** → 先 `wait` 再有限重试清理。
    真实冒烟暴露的，桩进程退出太快无法复现。
+6. **Windows 上 `taskkill /T` 会漏掉正在创建的孙进程**（TASK-009 收尾时发现并修复）。
+   `taskkill /F /T /PID` 只对**调用那一刻已存在**的子进程有效；若 Agent 恰好在被杀瞬间
+   正在 `CreateProcess`，那个子进程会逃出清理范围继续运行。本机实测约 **20%** 的概率留下
+   幸存孙进程——独立复现脚本 8/8 显示 `taskkill rc=0` 且输出"已终止…属于…子进程"，
+   说明快照本身是对的，缺口在于快照与创建之间的竞态窗口。Linux 上 CI 用
+   `os.killpg`（内核级进程组 kill）没有这个窗口，所以只在 Windows 暴露。
+
+   修法是改用 Windows **Job Object**（`app/runner/process_tree.py`）：把 Agent 进程加入
+   Job 并设置 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，关闭句柄时由**内核**杀掉组内所有进程，
+   包括关闭之后才被创建出来的那些。只用标准库 `ctypes`，不引入新依赖；创建或分配失败
+   （受限环境不允许嵌套 Job）时安全退回 `taskkill`，行为退化为旧实现。
+   验证：该用例在修复前 5 连跑失败 1 次，修复后 **10 连跑 0 失败**，其余 26 条 CLI Runner
+   用例无回归。
 
 ## 7. 已知限制
 

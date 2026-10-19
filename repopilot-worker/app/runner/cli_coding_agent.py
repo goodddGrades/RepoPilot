@@ -32,6 +32,7 @@ from app.runner.base import (
     RunnerResult,
     RunnerTimeout,
 )
+from app.runner.process_tree import KillOnCloseJob
 
 # 脱敏：这些值不允许出现在事件或结果里。
 _SECRET_MARKERS = ("sk-", "Bearer ", "api_key", "apiKey", "secret", "token=")
@@ -207,18 +208,27 @@ def _spawn(argv: list[str], prompt: str, run_dir: Path,
     else:
         kwargs["start_new_session"] = True
 
+    # Windows：把子进程放进"关闭即杀"的 Job Object。
+    # taskkill /T 只覆盖调用时已存在的子进程，恰好在 kill 瞬间创建的孙进程会逃逸；
+    # Job Object 由内核跟踪整棵树，关闭句柄时连事后创建的也一起杀。
+    job = KillOnCloseJob()
     process = subprocess.Popen(  # noqa: S603 - 参数数组，无 shell
         argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace", **kwargs)
+    job.assign(process)
     try:
         stdout, stderr = process.communicate(input=prompt, timeout=timeout)
     except subprocess.TimeoutExpired:
+        # 先关 Job：内核会杀掉整棵树（含正在创建中的子进程）
+        job.close()
         _terminate(process)
         try:
             process.communicate(timeout=15)
         except subprocess.TimeoutExpired:
             process.kill()
         raise _Timeout from None
+    finally:
+        job.close()
     # communicate 返回后进程仍可能处于"已退出但句柄未释放"状态（Windows 上尤其如此）。
     # 等它真正结束再让调用方删目录，否则清理会静默失败并留下垃圾目录。
     try:

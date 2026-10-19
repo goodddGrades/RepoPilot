@@ -247,12 +247,21 @@ def test_grandchild_process_does_not_survive_timeout(
     """超时杀的是进程组：孙进程不能在父被杀后继续运行。"""
     monkeypatch.setenv("STUB_MODE", "child")
     monkeypatch.setenv("STUB_CHILD_MARKER", str(tmp_path / "survivor.txt"))
+    # 孙进程在 CHILD_DELAY 秒后才写标记；测试必须等过这个时间点才能断言"它没活下来"，
+    # 否则一个真正幸存的孙进程也可能因为"还没轮到它写"而让用例假通过。
+    # 等待窗口取 CHILD_DELAY + 余量：既留足 kill 完成的时间，又保证标记本该出现时一定出现过。
+    child_delay = 8.0
+    monkeypatch.setenv("STUB_CHILD_DELAY_SECONDS", str(int(child_delay)))
     emit, _ = collect()
 
     with pytest.raises(RunnerTimeout):
         run_stub(emit, request=make_request(budget={"timeoutSeconds": 1}))
 
-    time.sleep(4)
+    deadline = time.monotonic() + child_delay + 4.0
+    while time.monotonic() < deadline:
+        if (tmp_path / "survivor.txt").exists():
+            break
+        time.sleep(0.25)
     assert not (tmp_path / "survivor.txt").exists(), "超时后孙进程仍在运行"
 
 
