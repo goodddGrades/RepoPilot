@@ -27,9 +27,12 @@ import java.io.IOException;
 public class WorkerController {
 
     private final WorkService workService;
+    private final com.repopilot.modules.evaluation.service.JobAttemptService jobAttemptService;
 
-    public WorkerController(WorkService workService) {
+    public WorkerController(WorkService workService,
+                            com.repopilot.modules.evaluation.service.JobAttemptService jobAttemptService) {
         this.workService = workService;
+        this.jobAttemptService = jobAttemptService;
     }
 
     @PostMapping("/work/claim")
@@ -71,5 +74,31 @@ public class WorkerController {
             @RequestPart("file") MultipartFile file) throws IOException {
         return Responses.created(workService.uploadArtifact(runId, attemptId, leaseToken,
                 artifactType, file.getContentType(), file.getBytes()));
+    }
+
+    // ------------------------------------------------------------------ 评测（TASK-007）
+
+    @PostMapping("/job-attempts/{id}/heartbeat")
+    public ResponseEntity<ApiResponse<WorkerDtos.HeartbeatResult>> jobHeartbeat(
+            @PathVariable String id, @RequestBody WorkerDtos.HeartbeatRequest request) {
+        return Responses.ok(jobAttemptService.heartbeat(id, request.leaseToken()));
+    }
+
+    /**
+     * 提交评测结论。
+     *
+     * <p>{@code verdict=FAIL} 是质量失败，Job 仍为 COMPLETED；只有运行异常才走 {@code /fail}。
+     * 同一正文重放返回原回执，不同正文 409。
+     */
+    @PostMapping("/job-attempts/{id}/complete")
+    public ResponseEntity<ApiResponse<WorkerDtos.JobCompleteResult>> jobComplete(
+            @PathVariable String id, @RequestBody WorkerDtos.JobCompleteRequest request) {
+        return Responses.ok(jobAttemptService.complete(id, request));
+    }
+
+    @PostMapping("/job-attempts/{id}/fail")
+    public ResponseEntity<ApiResponse<WorkerDtos.JobFailResult>> jobFail(
+            @PathVariable String id, @RequestBody WorkerDtos.JobFailRequest request) {
+        return Responses.ok(jobAttemptService.fail(id, request));
     }
 }

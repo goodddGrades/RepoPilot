@@ -102,6 +102,35 @@ public interface TraceEventMapper {
             """)
     List<String> listEventIdsByAttempt(@Param("attemptId") String attemptId);
 
+    /**
+     * 某 Run 的全部事件 id（TASK-007 评测清单用）。
+     *
+     * <p>离线 Run 没有 Attempt，事件也没有 {@code run_attempt_id}；在线 Run 的评测输入
+     * 必须只取 accepted Attempt 的事件，因此调用方应优先用 {@link #listEventIdsByAttempt}。
+     * 这个方法只用于"该 Run 没有 Attempt 语义"的离线场景。
+     */
+    @Select("""
+            SELECT event_id
+              FROM trace_events
+             WHERE run_id = #{runId}
+             ORDER BY event_id ASC
+            """)
+    List<String> listEventIdsByRun(@Param("runId") String runId);
+
+    /**
+     * 证据引用校验：该 eventId 是否真的属于这个 Run。
+     *
+     * <p>不返回事件内容，只回答"存不存在"。评测结果里的证据必须能被追溯到具体事件，
+     * 但跨 Run 引用一律拒绝——否则一个 Run 的结果可以"引用"另一个 Run 的轨迹。
+     */
+    @Select("""
+            SELECT COUNT(*)
+              FROM trace_events
+             WHERE event_id = #{eventId}
+               AND run_id = #{runId}
+            """)
+    long countEventInRun(@Param("eventId") String eventId, @Param("runId") String runId);
+
     @Select("SELECT COUNT(*) FROM trace_events WHERE run_attempt_id = #{attemptId}")
     long countByAttempt(@Param("attemptId") String attemptId);
 

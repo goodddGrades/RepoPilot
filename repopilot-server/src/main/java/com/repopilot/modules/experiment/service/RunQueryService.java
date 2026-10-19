@@ -31,12 +31,18 @@ public class RunQueryService {
     private final RunStore runStore;
     private final ExperimentStatusService experimentStatus;
     private final EvaluationJobService jobService;
+    private final com.repopilot.modules.evaluation.mapper.EvaluationResultMapper resultMapper;
+    private final com.repopilot.modules.evaluation.mapper.EvaluationJobAttemptMapper jobAttemptMapper;
 
     public RunQueryService(RunStore runStore, ExperimentStatusService experimentStatus,
-                           EvaluationJobService jobService) {
+                           EvaluationJobService jobService,
+                           com.repopilot.modules.evaluation.mapper.EvaluationResultMapper resultMapper,
+                           com.repopilot.modules.evaluation.mapper.EvaluationJobAttemptMapper jobAttemptMapper) {
         this.runStore = runStore;
         this.experimentStatus = experimentStatus;
         this.jobService = jobService;
+        this.resultMapper = resultMapper;
+        this.jobAttemptMapper = jobAttemptMapper;
     }
 
     public PageResponse<RunDtos.RunView> list(String experimentId, String targetId, String caseKey,
@@ -95,13 +101,34 @@ public class RunQueryService {
     }
 
     private List<RunDtos.JobView> toJobViews(List<JobListRow> jobs) {
-        return jobs.stream()
-                .map(j -> new RunDtos.JobView(j.id, j.batchId, j.batchNo == null ? 0 : j.batchNo,
-                        j.evaluatorKey, j.evaluatorVersion == null ? 0 : j.evaluatorVersion,
-                        j.executionOrder == null ? 0 : j.executionOrder,
-                        Boolean.TRUE.equals(j.required), j.status,
-                        j.attemptCount == null ? 0 : j.attemptCount, j.errorCode))
-                .toList();
+        if (jobs.isEmpty()) {
+            return List.of();
+        }
+        Map<String, RunDtos.JobResultView> results = new LinkedHashMap<>();
+        List<String> jobIds = jobs.stream().map(j -> j.id).toList();
+        for (com.repopilot.modules.evaluation.entity.EvaluationResult result
+                : resultMapper.findByJobIds(jobIds)) {
+            results.put(result.getJobId(), new RunDtos.JobResultView(result.getId(),
+                    result.getJobAttemptId(), result.getVerdict(), result.getScore(),
+                    result.getReason(), result.getEvidenceJson(), result.getResultJson(),
+                    result.getGeneratedBy(), result.getCreatedAt()));
+        }
+        List<RunDtos.JobView> views = new ArrayList<>(jobs.size());
+        for (JobListRow j : jobs) {
+            List<RunDtos.JobAttemptView> attempts = jobAttemptMapper.listByJob(j.id).stream()
+                    .map(a -> new RunDtos.JobAttemptView(a.getId(), a.getAttemptNo(), a.getWorkerId(),
+                            a.getStatus(), a.getStartedAt(), a.getFinishedAt(),
+                            a.getErrorCode(), a.getErrorMessage()))
+                    .toList();
+            views.add(new RunDtos.JobView(j.id, j.batchId, j.batchNo == null ? 0 : j.batchNo,
+                    j.evaluatorKey, j.evaluatorVersion == null ? 0 : j.evaluatorVersion,
+                    j.evaluatorType,
+                    j.executionOrder == null ? 0 : j.executionOrder,
+                    Boolean.TRUE.equals(j.required), j.status,
+                    j.attemptCount == null ? 0 : j.attemptCount, j.errorCode, j.errorMessage,
+                    j.startedAt, j.finishedAt, results.get(j.id), attempts));
+        }
+        return views;
     }
 
     private List<RunDtos.JobBatchSummary> summarize(List<JobListRow> jobs) {

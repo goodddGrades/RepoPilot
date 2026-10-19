@@ -39,7 +39,14 @@ public record WorkerProperties(
         /** 后台扫描（推进 PENDING、回收过期租约）的间隔。 */
         Duration scanInterval,
         /** 是否启用后台扫描；集成测试关闭它，由用例显式调用以消除时序不确定性。 */
-        boolean schedulerEnabled
+        boolean schedulerEnabled,
+        /**
+         * 单评测 Job 最多尝试次数（含首次）。
+         *
+         * <p>放在记录末尾而不是中间：Spring Boot 的构造器绑定按名称匹配，
+         * 新增字段不会影响已有配置文件；缺省时由下面的紧凑构造器补 3。
+         */
+        Integer maxAttemptsPerJob
 ) {
 
     public WorkerProperties {
@@ -53,6 +60,7 @@ public record WorkerProperties(
         retryBackoffSecond = retryBackoffSecond == null ? Duration.ofSeconds(15) : retryBackoffSecond;
         taskDeadline = taskDeadline == null ? Duration.ofMinutes(10) : taskDeadline;
         scanInterval = scanInterval == null ? Duration.ofSeconds(2) : scanInterval;
+        maxAttemptsPerJob = maxAttemptsPerJob == null || maxAttemptsPerJob <= 0 ? 3 : maxAttemptsPerJob;
     }
 
     /** 解析白名单；空白项被忽略。 */

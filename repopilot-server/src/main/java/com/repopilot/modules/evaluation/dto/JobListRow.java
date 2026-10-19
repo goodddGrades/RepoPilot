@@ -19,7 +19,11 @@ public class JobListRow {
     public Boolean required;
     public String evaluatorKey;
     public Integer evaluatorVersion;
+    public String evaluatorType;
     public JobStatus status;
     public Integer attemptCount;
     public String errorCode;
+    public String errorMessage;
+    public java.time.Instant startedAt;
+    public java.time.Instant finishedAt;
 }

@@ -108,4 +108,18 @@ public interface EvaluatorDefinitionMapper {
     long count(@Param("key") String key,
                @Param("type") EvaluatorType type,
                @Param("status") VersionStatus status);
+
+    /**
+     * 已发布的算子 key 集合（TASK-007 能力校验使用）。
+     *
+     * <p>Worker 声明 {@code EVAL:xxx} 时，key 必须是这里的一员：拼错的能力如果被静默接受，
+     * Worker 会一直"在线但领不到任务"，而实验看起来只是卡住。
+     */
+    @Select("""
+            SELECT DISTINCT evaluator_key
+              FROM evaluator_definitions
+             WHERE status = 'PUBLISHED'
+             ORDER BY evaluator_key
+            """)
+    List<String> listPublishedKeys();
 }

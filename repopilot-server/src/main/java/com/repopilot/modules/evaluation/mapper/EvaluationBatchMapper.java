@@ -126,4 +126,70 @@ public interface EvaluationBatchMapper {
             """)
     int cancelNonTerminalByExperiment(@Param("experimentId") String experimentId,
                                       @Param("now") Instant now);
+
+    // ================================================================== TASK-007
+
+    @Select("""
+            <script>
+            SELECT id,
+                   experiment_id,
+                   evaluation_plan_version_id,
+                   batch_no,
+                   trigger_type,
+                   parent_batch_id,
+                   initial_experiment_id,
+                   selection_json,
+                   status,
+                   expected_job_count,
+                   created_by,
+                   started_at,
+                   finished_at,
+                   created_at,
+                   updated_at
+              FROM evaluation_batches
+             WHERE experiment_id = #{experimentId}
+            <if test="status != null"> AND status = #{status} </if>
+             ORDER BY batch_no DESC
+             LIMIT #{limit} OFFSET #{offset}
+            </script>
+            """)
+    List<EvaluationBatch> listByExperiment(@Param("experimentId") String experimentId,
+                                          @Param("status") BatchStatus status,
+                                          @Param("limit") int limit,
+                                          @Param("offset") int offset);
+
+    @Select("""
+            <script>
+            SELECT COUNT(*)
+              FROM evaluation_batches
+             WHERE experiment_id = #{experimentId}
+            <if test="status != null"> AND status = #{status} </if>
+            </script>
+            """)
+    long countByExperiment(@Param("experimentId") String experimentId,
+                           @Param("status") BatchStatus status);
+
+    /** 收口批次：只从 RUNNING 出发，重复收敛影响 0 行。 */
+    @Update("""
+            UPDATE evaluation_batches
+               SET status = #{status},
+                   finished_at = #{now},
+                   updated_at = #{now}
+             WHERE id = #{id}
+               AND status = 'RUNNING'
+            """)
+    int markTerminal(@Param("id") String id,
+                     @Param("status") BatchStatus status,
+                     @Param("now") Instant now);
+
+    /** 用户取消批次：PENDING/RUNNING → CANCELLED，终态批次重复取消返回 0。 */
+    @Update("""
+            UPDATE evaluation_batches
+               SET status = 'CANCELLED',
+                   finished_at = #{now},
+                   updated_at = #{now}
+             WHERE id = #{id}
+               AND status IN ('PENDING', 'RUNNING')
+            """)
+    int cancel(@Param("id") String id, @Param("now") Instant now);
 }

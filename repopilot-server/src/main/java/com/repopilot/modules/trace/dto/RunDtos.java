@@ -2,10 +2,12 @@ package com.repopilot.modules.trace.dto;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.repopilot.common.state.AttemptStatus;
+import com.repopilot.common.state.GeneratedBy;
 import com.repopilot.common.state.JobStatus;
 import com.repopilot.common.state.RunMode;
 import com.repopilot.common.state.RunStatus;
 import com.repopilot.common.state.TaskOutcome;
+import com.repopilot.common.state.Verdict;
 import com.repopilot.modules.trace.entity.EvaluationRun;
 import com.repopilot.modules.trace.entity.RunAttempt;
 import com.repopilot.modules.trace.entity.TraceEvent;
@@ -114,16 +116,55 @@ public final class RunDtos {
                                   int skipped) {
     }
 
+    /**
+     * 一个评测 Job 的展示视图。
+     *
+     * <p>{@code status} 是**技术状态**（PENDING/RUNNING/COMPLETED/FAILED/SKIPPED），
+     * {@code result.verdict} 是**质量结论**（PASS/FAIL/...）。两者必须分开看：
+     * {@code status=COMPLETED, verdict=FAIL} 表示"评测正常完成，结论是不合格"；
+     * {@code status=FAILED} 表示"评测本身没跑成"，此时没有 result。
+     *
+     * <p>{@code result} 为 null 时前端不得显示 0 分或"通过"——那是没有结论，不是零分。
+     */
     public record JobView(String id,
                           String batchId,
                           int batchNo,
                           String evaluatorKey,
                           int evaluatorVersion,
+                          String evaluatorType,
                           int executionOrder,
                           boolean required,
                           JobStatus status,
                           int attemptCount,
-                          String errorCode) {
+                          String errorCode,
+                          String errorMessage,
+                          java.time.Instant startedAt,
+                          java.time.Instant finishedAt,
+                          JobResultView result,
+                          List<JobAttemptView> attempts) {
+    }
+
+    /** 最终结果（每个 Job 至多一条，由数据库唯一键保证）。 */
+    public record JobResultView(String id,
+                                String jobAttemptId,
+                                Verdict verdict,
+                                java.math.BigDecimal score,
+                                String reason,
+                                JsonNode evidence,
+                                JsonNode result,
+                                GeneratedBy generatedBy,
+                                java.time.Instant createdAt) {
+    }
+
+    /** 评测 Attempt 的历史；重试不会被覆盖，旧 Attempt 也保留错误信息。 */
+    public record JobAttemptView(String id,
+                                 int attemptNo,
+                                 String workerId,
+                                 AttemptStatus status,
+                                 java.time.Instant startedAt,
+                                 java.time.Instant finishedAt,
+                                 String errorCode,
+                                 String errorMessage) {
     }
 
     /**

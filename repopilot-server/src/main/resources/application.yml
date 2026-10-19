@@ -109,6 +109,8 @@ repopilot:
     heartbeat-interval: 15s
     max-tasks-limit: 10
     max-attempts-per-run: 2
+    # 评测 Job 的尝试预算与 Run 分开：算子是短任务，多给一次重试的成本远低于重跑 Agent
+    max-attempts-per-job: 3
     retry-backoff-first: 5s
     retry-backoff-second: 15s
     task-deadline: 10m

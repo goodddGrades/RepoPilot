@@ -213,6 +213,18 @@ public class RunStore {
         return eventMapper.listEventIdsByAttempt(attemptId);
     }
 
+    /** TASK-007：评测输入的事件清单。在线按 accepted Attempt 取，离线按 Run 取。 */
+    public List<String> eventIdsOfRun(String runId, String attemptId) {
+        return attemptId == null
+                ? eventMapper.listEventIdsByRun(runId)
+                : eventMapper.listEventIdsByAttempt(attemptId);
+    }
+
+    /** 证据引用校验：事件是否属于该 Run。 */
+    public boolean eventBelongsToRun(String eventId, String runId) {
+        return eventMapper.countEventInRun(eventId, runId) > 0;
+    }
+
     public long countEvents(String attemptId) {
         return eventMapper.countByAttempt(attemptId);
     }
@@ -292,5 +304,24 @@ public class RunStore {
     /** 清理孤儿对象时用来算差集。 */
     public List<String> allArtifactObjectKeys() {
         return artifactMapper.listObjectKeys();
+    }
+
+    // ---- TASK-007：评测收口 ----
+
+    public List<com.repopilot.modules.trace.dto.RunListRow> listByBatch(String batchId,
+                                                                        int limit, int offset) {
+        return runMapper.listByBatch(batchId, limit, offset);
+    }
+
+    public long countByBatch(String batchId) {
+        return runMapper.countByBatch(batchId);
+    }
+
+    public int markEvaluated(String runId, Instant now) {
+        return runMapper.markEvaluated(runId, now);
+    }
+
+    public int markEvaluationFailed(String runId, Instant now) {
+        return runMapper.markEvaluationFailed(runId, now);
     }
 }

@@ -90,6 +90,8 @@ public class WorkService {
     private final DatasetVersionService datasetVersionService;
     private final EvaluationBatchService batchService;
     private final EvaluationJobService jobService;
+    private final com.repopilot.modules.evaluation.service.EvaluationClaimService evaluationClaimService;
+    private final com.repopilot.modules.evaluation.service.JobAttemptService jobAttemptService;
     private final RunnerRegistry runnerRegistry;
     private final ArtifactStorage storage;
     private final WorkerProperties props;
@@ -104,6 +106,8 @@ public class WorkService {
                        DatasetVersionService datasetVersionService,
                        EvaluationBatchService batchService,
                        EvaluationJobService jobService,
+                       com.repopilot.modules.evaluation.service.EvaluationClaimService evaluationClaimService,
+                       com.repopilot.modules.evaluation.service.JobAttemptService jobAttemptService,
                        RunnerRegistry runnerRegistry,
                        ArtifactStorage storage,
                        WorkerProperties props,
@@ -118,6 +122,8 @@ public class WorkService {
         this.datasetVersionService = datasetVersionService;
         this.batchService = batchService;
         this.jobService = jobService;
+        this.evaluationClaimService = evaluationClaimService;
+        this.jobAttemptService = jobAttemptService;
         this.runnerRegistry = runnerRegistry;
         this.storage = storage;
         this.props = props;
@@ -132,8 +138,12 @@ public class WorkService {
         if (!props.allowedWorkerIds().isEmpty() && !props.allowedWorkerIds().contains(workerId)) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "workerId 不在允许列表内: " + workerId);
         }
-        List<com.repopilot.common.state.RunnerType> runnerTypes =
-                runnerRegistry.parseCapabilities(request.capabilities());
+        // 能力分两类：RUN:* 领执行任务，EVAL:* 领评测 Job。拼错的 EVAL key 在这里就 400，
+        // 不等到"Worker 一直空闲"才发现。
+        com.repopilot.common.registry.WorkerCapabilities capabilities =
+                com.repopilot.common.registry.WorkerCapabilities.parse(request.capabilities());
+        List<com.repopilot.common.state.RunnerType> runnerTypes = capabilities.runners();
+        List<String> evaluatorKeys = evaluationClaimService.requireSupportedKeys(capabilities.evaluatorKeys());
         int maxTasks = request.maxTasks() == null ? 1 : request.maxTasks();
         if (maxTasks < 1 || maxTasks > props.maxTasksLimit()) {
             throw BusinessException.field("maxTasks", "maxTasks 必须在 1~" + props.maxTasksLimit() + " 之间");
@@ -142,11 +152,12 @@ public class WorkService {
         Instant now = Instant.now();
 
         List<WorkerDtos.WorkItem> tasks = tx.execute(status -> {
+            List<WorkerDtos.WorkItem> items = new ArrayList<>(maxTasks);
             // 候选只是"看一眼有哪些可选"，真正的抢占在 lockClaimCandidate 里逐条加锁完成。
             // 候选窗口比 maxTasks 宽，避免并发时互相抢同一条导致有人领空。
             int candidateLimit = Math.min(maxTasks * CLAIM_CANDIDATE_FACTOR, CLAIM_CANDIDATE_LIMIT);
-            List<String> candidates = runStore.claimCandidates(typeNames, now, candidateLimit);
-            List<WorkerDtos.WorkItem> items = new ArrayList<>(maxTasks);
+            List<String> candidates = runnerTypes.isEmpty()
+                    ? List.of() : runStore.claimCandidates(typeNames, now, candidateLimit);
             Set<String> startedExperiments = new HashSet<>();
             for (String runId : candidates) {
                 if (items.size() >= maxTasks) {
@@ -169,6 +180,11 @@ public class WorkService {
             // 有任务真正被领走，实验才从 QUEUED 进入 RUNNING（条件更新，已取消则影响 0 行）
             for (String experimentId : startedExperiments) {
                 experimentMapper.markRunning(experimentId, now);
+            }
+            // 剩余名额给评测任务：两类任务共用一次领取，避免"只跑 Agent 的 Worker"占满队列
+            if (!evaluatorKeys.isEmpty() && items.size() < maxTasks) {
+                items.addAll(evaluationClaimService.claim(workerId, evaluatorKeys,
+                        maxTasks - items.size(), now));
             }
             return items;
         });
@@ -197,8 +213,10 @@ public class WorkService {
         WorkerDtos.RunInput input = new WorkerDtos.RunInput(experiment.getId(),
                 target.getTargetKey(), agentVersion.getId(), agentVersion.getRunnerType().name(),
                 agentVersion.getConfigJson(), budget, casePayload);
+        // 转成 JsonNode：与 EVALUATION 任务共用 WorkItem.input 字段，序列化后的 JSON 形状不变
         return new WorkerDtos.WorkItem("RUN", run.getId(), attempt.getId(), attempt.getAttemptNo(),
-                token, attempt.getLeaseUntil(), attempt.getDeadlineAt(), input);
+                token, attempt.getLeaseUntil(), attempt.getDeadlineAt(),
+                objectMapper.valueToTree(input), null);
     }
 
     // ------------------------------------------------------------------ 心跳
@@ -553,10 +571,13 @@ public class WorkService {
         int promotedPending = runStore.promotePending(now);
         int promotedRetries = runStore.promoteRetries(now);
         int reaped = reapExpired(now);
-        return new MaintenanceResult(promotedPending, promotedRetries, reaped);
+        // 评测 Attempt 与执行 Attempt 分开回收：两者的重试预算与终态语义不同
+        int reapedJobs = jobAttemptService.reapExpired();
+        return new MaintenanceResult(promotedPending, promotedRetries, reaped, reapedJobs);
     }
 
-    public record MaintenanceResult(int promotedPending, int promotedRetries, int reaped) {
+    public record MaintenanceResult(int promotedPending, int promotedRetries, int reaped,
+                                    int reapedJobs) {
     }
 
     private int reapExpired(Instant now) {

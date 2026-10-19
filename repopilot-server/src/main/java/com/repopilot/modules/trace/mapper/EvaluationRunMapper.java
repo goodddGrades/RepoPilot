@@ -570,4 +570,72 @@ public interface EvaluationRunMapper {
                AND mode = 'OFFLINE'
             """)
     int markEvaluating(@Param("id") String id, @Param("updatedAt") Instant updatedAt);
+
+    // ================================================================== TASK-007
+
+    /**
+     * 批次登记表中的 Run 分页（只读）。
+     *
+     * <p>范围真相是 {@code evaluation_batch_runs}，不是每次重新套用的过滤条件：
+     * 批次创建后新产生的 Run 不会"自动进入"这个批次。
+     */
+    @Select("""
+            SELECT r.id,
+                   r.experiment_id,
+                   r.experiment_target_id,
+                   c.case_key,
+                   t.target_key,
+                   r.dataset_case_id,
+                   r.repeat_index,
+                   r.mode,
+                   r.status,
+                   r.task_outcome,
+                   r.attempt_count,
+                   r.accepted_attempt_id,
+                   r.sealed_at,
+                   r.started_at,
+                   r.finished_at,
+                   r.created_at
+              FROM evaluation_batch_runs br
+              JOIN evaluation_runs r ON r.id = br.run_id
+              JOIN dataset_cases c ON c.id = r.dataset_case_id
+              JOIN experiment_targets t ON t.id = r.experiment_target_id
+             WHERE br.batch_id = #{batchId}
+             ORDER BY r.created_at ASC, r.id ASC
+             LIMIT #{limit} OFFSET #{offset}
+            """)
+    List<com.repopilot.modules.trace.dto.RunListRow> listByBatch(@Param("batchId") String batchId,
+                                                                 @Param("limit") int limit,
+                                                                 @Param("offset") int offset);
+
+    @Select("SELECT COUNT(*) FROM evaluation_batch_runs WHERE batch_id = #{batchId}")
+    long countByBatch(@Param("batchId") String batchId);
+
+    /**
+     * 评测收口：Run 的 required Job 全部 COMPLETED 时 EVALUATING→COMPLETED。
+     *
+     * <p>条件里带旧状态，重复收口影响 0 行；已取消的 Run 不会被改成完成。
+     * {@code finished_at} 只在为空时写：在线 Run 封口时已经写过执行完成时间，
+     * 那是"执行结束"的事实，不被评测收口覆盖。
+     */
+    @Update("""
+            UPDATE evaluation_runs
+               SET status = 'COMPLETED',
+                   finished_at = COALESCE(finished_at, #{now}),
+                   updated_at = #{now}
+             WHERE id = #{id}
+               AND status = 'EVALUATING'
+            """)
+    int markEvaluated(@Param("id") String id, @Param("now") Instant now);
+
+    /** 评测收口：required Job 技术失败时 EVALUATING→FAILED。 */
+    @Update("""
+            UPDATE evaluation_runs
+               SET status = 'FAILED',
+                   finished_at = COALESCE(finished_at, #{now}),
+                   updated_at = #{now}
+             WHERE id = #{id}
+               AND status = 'EVALUATING'
+            """)
+    int markEvaluationFailed(@Param("id") String id, @Param("now") Instant now);
 }

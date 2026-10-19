@@ -1,14 +1,10 @@
 package com.repopilot.common.registry;
 
-import com.repopilot.common.exception.BusinessException;
 import com.repopilot.common.state.RunnerType;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
 import java.util.EnumSet;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -19,8 +15,8 @@ import java.util.Set;
  * 未经验证的命令。启动时直接拒绝，比"先跑起来再说"诚实。
  *
  * <p>能力字符串格式遵循 API 契约：{@code RUN:MOCK}、{@code EVAL:<evaluatorKey>}。
- * TASK-004 只消费 {@code RUN:*}；{@code EVAL:*} 被接受但不会产生任何任务
- * （评测算子由 TASK-007 接手）。
+ * TASK-004 只消费 {@code RUN:*}；TASK-007 起 {@code EVAL:*} 由
+ * {@link com.repopilot.modules.evaluation.service.EvaluationClaimService} 消费。
  */
 @Component
 public class RunnerRegistry {
@@ -29,8 +25,13 @@ public class RunnerRegistry {
     private static final Set<TaskType> MOCK_TASKS =
             EnumSet.of(TaskType.AGENT_TASK, TaskType.LLM_CALL);
 
-    public boolean isRegistered(RunnerType type) {
+    /** 无状态判断：供 {@link WorkerCapabilities} 这类静态解析器复用，避免为了校验格式去建 Bean。 */
+    public static boolean isRegisteredType(RunnerType type) {
         return type != null && REGISTERED.contains(type);
+    }
+
+    public boolean isRegistered(RunnerType type) {
+        return isRegisteredType(type);
     }
 
     public Set<TaskType> supportedTasks(RunnerType type) {
@@ -50,40 +51,11 @@ public class RunnerRegistry {
      *
      * <p>未知格式直接 400：把拼错的能力静默忽略，会让 Worker 一直"领取成功但什么也拿不到"，
      * 排查成本远高于启动时失败。
+     *
+     * <p>TASK-007 起完整解析（含 {@code EVAL:*}）由 {@link WorkerCapabilities} 负责；
+     * 本方法保留给只关心执行能力的调用方。
      */
     public List<RunnerType> parseCapabilities(List<String> capabilities) {
-        if (capabilities == null || capabilities.isEmpty()) {
-            throw BusinessException.field("capabilities", "capabilities 不能为空");
-        }
-        Set<RunnerType> result = new LinkedHashSet<>();
-        for (String raw : capabilities) {
-            if (raw == null || raw.isBlank()) {
-                throw BusinessException.field("capabilities", "capabilities 不能包含空值");
-            }
-            String value = raw.trim();
-            int colon = value.indexOf(':');
-            if (colon <= 0 || colon == value.length() - 1) {
-                throw BusinessException.field("capabilities",
-                        "能力格式必须是 TYPE:NAME，收到: " + value);
-            }
-            String prefix = value.substring(0, colon).toUpperCase(Locale.ROOT);
-            String name = value.substring(colon + 1);
-            if ("RUN".equals(prefix)) {
-                RunnerType type;
-                try {
-                    type = RunnerType.valueOf(name.toUpperCase(Locale.ROOT));
-                } catch (IllegalArgumentException ex) {
-                    throw BusinessException.field("capabilities", "未知的 Runner: " + name);
-                }
-                if (!isRegistered(type)) {
-                    throw BusinessException.field("capabilities",
-                            "Runner 未注册（V1 仅支持 MOCK）: " + name);
-                }
-                result.add(type);
-            } else if (!"EVAL".equals(prefix)) {
-                throw BusinessException.field("capabilities", "未知的能力类型: " + prefix);
-            }
-        }
-        return new ArrayList<>(result);
+        return WorkerCapabilities.parse(capabilities).runners();
     }
 }

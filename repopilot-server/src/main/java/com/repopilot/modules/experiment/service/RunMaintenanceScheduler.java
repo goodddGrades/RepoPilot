@@ -32,9 +32,11 @@ public class RunMaintenanceScheduler {
     public void tick() {
         try {
             WorkService.MaintenanceResult result = workService.maintain();
-            if (result.promotedPending() > 0 || result.promotedRetries() > 0 || result.reaped() > 0) {
-                log.info("执行扫描：推进 {} 个 PENDING、{} 个重试，回收 {} 个过期 Attempt",
-                        result.promotedPending(), result.promotedRetries(), result.reaped());
+            if (result.promotedPending() > 0 || result.promotedRetries() > 0
+                    || result.reaped() > 0 || result.reapedJobs() > 0) {
+                log.info("执行扫描：推进 {} 个 PENDING、{} 个重试，回收 {} 个过期执行 Attempt、{} 个过期评测 Attempt",
+                        result.promotedPending(), result.promotedRetries(), result.reaped(),
+                        result.reapedJobs());
             }
         } catch (RuntimeException ex) {
             log.warn("执行扫描失败，将在下一轮重试: {}", ex.getMessage(), ex);
