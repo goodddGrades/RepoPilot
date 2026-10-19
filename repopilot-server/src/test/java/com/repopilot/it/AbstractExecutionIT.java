@@ -15,6 +15,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 
+import java.math.BigDecimal;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -304,5 +307,207 @@ abstract class AbstractExecutionIT extends AbstractApiIT {
     protected String runIdOf(String experimentId, String status) {
         return jdbc.queryForObject("SELECT id FROM evaluation_runs WHERE experiment_id = ? AND status = ?"
                 + " ORDER BY created_at, id LIMIT 1", String.class, experimentId, status);
+    }
+
+    // ==================================================================
+    // 评测侧助手（TASK-007 建立，TASK-009 复用）
+    //
+    // 下沉到基类而不是各测试各写一份：标注工作台要验证"人工复核针对的是真实
+    // 评测结论"，就必须能造出真的 PENDING/FAILED Job 与真的 evaluation_results，
+    // 而这些素材的造法只有一条——走 Worker 协议真的领一次、真的提交一次。
+    // ==================================================================
+
+    /** 方案里的一项：算子 + 串行顺序 + 算子配置。 */
+    protected record PlanItem(String evaluatorKey, int order, String config) {
+    }
+
+    protected static PlanItem item(String key, int order, String config) {
+        return new PlanItem(key, order, config);
+    }
+
+    /** 在既有方案下追加一个已发布版本：需要"同 Run 不同方案版本"或自定义算子集时用。 */
+    protected String publishPlan(List<PlanItem> items) {
+        Scenario seed = seedPublished(1);
+        String planId = jdbc.queryForObject("SELECT plan_id FROM evaluation_plan_versions WHERE id = ?",
+                String.class, seed.planVersionId());
+        ArrayNode array = objectMapper.createArrayNode();
+        for (PlanItem planItem : items) {
+            ObjectNode node = array.addObject();
+            node.put("evaluatorDefinitionId", evaluatorId(planItem.evaluatorKey()));
+            node.put("executionOrder", planItem.order());
+            node.put("required", true);
+            node.set("config", json(planItem.config()));
+        }
+        ObjectNode body = objectMapper.createObjectNode();
+        body.putObject("config").put("threshold", 0.5);
+        body.set("items", array);
+        ResponseEntity<String> created = post("/api/v1/evaluation-plans/" + planId + "/versions",
+                idem("plan"), body.toString());
+        assertThat(created.getStatusCode().value())
+                .as("创建方案版本: %s", created.getBody()).isEqualTo(201);
+        String versionId = dataId(created);
+        ResponseEntity<String> published = post(
+                "/api/v1/evaluation-plan-versions/" + versionId + "/publish", idem("publish"), "{}");
+        assertThat(published.getStatusCode().value())
+                .as("发布方案版本: %s", published.getBody()).isEqualTo(200);
+        return versionId;
+    }
+
+    /** 用指定的方案版本 + 指定的用例数造一份场景。 */
+    protected Scenario scenarioWith(String planVersionId, int caseCount) {
+        Scenario seed = seedPublished(caseCount);
+        return new Scenario(seed.suffix(), seed.agentVersionId(), seed.datasetVersionId(),
+                planVersionId, seed.planItemId());
+    }
+
+    /** 以指定能力领取任务（{@code RUN:MOCK} 或 {@code EVAL:<算子 key>}）。 */
+    protected List<JsonNode> claimAs(String workerId, String... capabilities) {
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("workerId", workerId);
+        ArrayNode array = body.putArray("capabilities");
+        for (String capability : capabilities) {
+            array.add(capability);
+        }
+        body.put("maxTasks", 5);
+        ResponseEntity<String> response = workerPost("/internal/v1/work/claim", body);
+        assertThat(response.getStatusCode().value())
+                .as("领取: %s", response.getBody()).isEqualTo(200);
+        List<JsonNode> tasks = new ArrayList<>();
+        data(response).path("tasks").forEach(tasks::add);
+        return tasks;
+    }
+
+    protected static JsonNode single(List<JsonNode> tasks) {
+        assertThat(tasks).hasSize(1);
+        return tasks.get(0);
+    }
+
+    protected static JsonNode taskOf(List<JsonNode> tasks, String runId) {
+        return tasks.stream()
+                .filter(task -> runId.equals(task.path("runId").asText()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("没有领到 Run " + runId + " 的任务"));
+    }
+
+    /** 以字符串 JSON 提交执行结果（{@code outputJson} 传 null 表示没有输出）。 */
+    protected ResponseEntity<String> completeRun(String attemptId, String token, String outcome,
+                                                  String outputJson, List<String> eventIds) {
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("leaseToken", token);
+        body.put("taskOutcome", outcome);
+        if (outputJson != null) {
+            body.set("output", json(outputJson));
+        }
+        body.putObject("usage").put("totalTokens", 12);
+        body.put("expectedEventCount", eventIds.size());
+        body.put("eventManifestSha256", manifest(eventIds));
+        return workerPost("/internal/v1/run-attempts/" + attemptId + "/complete", body);
+    }
+
+    protected ResponseEntity<String> jobComplete(String attemptId, String token, String verdict,
+                                                  BigDecimal score, String reason, String evidenceJson,
+                                                  String resultJson, String generatedBy) {
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("leaseToken", token);
+        body.put("verdict", verdict);
+        if (score != null) {
+            body.set("score", objectMapper.getNodeFactory().numberNode(score));
+        }
+        body.put("reason", reason);
+        body.set("evidence", json(evidenceJson == null ? "[]" : evidenceJson));
+        if (resultJson != null) {
+            body.set("result", json(resultJson));
+        }
+        body.put("generatedBy", generatedBy);
+        return workerPost("/internal/v1/job-attempts/" + attemptId + "/complete", body);
+    }
+
+    protected ResponseEntity<String> jobFail(String attemptId, String token, String code,
+                                             boolean retryable) {
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("leaseToken", token);
+        body.put("errorCode", code);
+        body.put("errorMessage", "测试注入 " + code);
+        body.put("retryableHint", retryable);
+        return workerPost("/internal/v1/job-attempts/" + attemptId + "/fail", body);
+    }
+
+    /** 提交一个结论并断言成功。 */
+    protected void completeClaimed(JsonNode task, String verdict, BigDecimal score, String reason,
+                                  String evidenceJson, String resultJson, String generatedBy) {
+        ResponseEntity<String> response = jobComplete(task.path("attemptId").asText(),
+                task.path("leaseToken").asText(), verdict, score, reason, evidenceJson, resultJson,
+                generatedBy);
+        assertThat(response.getStatusCode().value())
+                .as("提交 %s: %s", verdict, response.getBody()).isEqualTo(200);
+    }
+
+    /** 把重试时间提前，等下一次领取不用真的等退避窗口。 */
+    protected void forceRetryDue(String jobId) {
+        jdbc.update("UPDATE evaluation_jobs SET next_retry_at = ? WHERE id = ?",
+                Timestamp.from(Instant.now().minusSeconds(5)), jobId);
+    }
+
+    protected String singleJobId(String runId) {
+        List<String> ids = jdbc.queryForList("SELECT id FROM evaluation_jobs WHERE run_id = ?"
+                + " ORDER BY created_at, id", String.class, runId);
+        assertThat(ids).as("Run %s 应只有一个 Job（单算子方案）", runId).hasSize(1);
+        return ids.get(0);
+    }
+
+    protected String batchIdOf(String jobId) {
+        return jdbc.queryForObject("SELECT batch_id FROM evaluation_jobs WHERE id = ?",
+                String.class, jobId);
+    }
+
+    /** 一个 Run 可能在本批次里有多个 Job，按 Run 查批次更稳妥。 */
+    protected String batchIdOfRun(String runId) {
+        return jdbc.queryForObject("SELECT batch_id FROM evaluation_jobs WHERE run_id = ?"
+                + " ORDER BY created_at, id LIMIT 1", String.class, runId);
+    }
+
+    /** 空字段在 NON_NULL 序列化下表现为缺省节点，两种情况都算"没有值"。 */
+    protected static boolean isNullOrMissing(JsonNode node) {
+        return node == null || node.isNull() || node.isMissingNode();
+    }
+
+    protected String runStatus(String runId) {
+        return jdbc.queryForObject("SELECT status FROM evaluation_runs WHERE id = ?",
+                String.class, runId);
+    }
+
+    protected String jobStatus(String jobId) {
+        return jdbc.queryForObject("SELECT status FROM evaluation_jobs WHERE id = ?",
+                String.class, jobId);
+    }
+
+    protected String attemptStatus(String attemptId) {
+        return jdbc.queryForObject("SELECT status FROM evaluation_job_attempts WHERE id = ?",
+                String.class, attemptId);
+    }
+
+    protected List<String> attemptStatuses(String jobId) {
+        return jdbc.queryForList("SELECT status FROM evaluation_job_attempts WHERE job_id = ?"
+                + " ORDER BY attempt_no", String.class, jobId);
+    }
+
+    protected long resultCount(String jobId) {
+        return count("SELECT COUNT(*) FROM evaluation_results WHERE job_id = ?", jobId);
+    }
+
+    protected JsonNode json(String text) {
+        try {
+            return objectMapper.readTree(text);
+        } catch (Exception ex) {
+            throw new AssertionError("测试内的 JSON 不合法: " + text, ex);
+        }
+    }
+
+    protected static String idem(String prefix) {
+        return "it-" + prefix + "-" + Ulid.newId();
+    }
+
+    protected static String workerId(String role) {
+        return "it-" + role + "-" + Ulid.newId().substring(18);
     }
 }

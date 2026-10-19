@@ -22,8 +22,8 @@ export interface NavItem {
    * 是否已实现。
    *
    * 未实现的模块显式置灰，避免点击后进入空白页造成"功能已完成"的误解。
-   * 当前可用项对应 TASK-004 交付范围：工作台、Agent、数据集、评测方案、算子、在线评测；
-   * 轨迹分析与标注报告仍属后续任务。
+   * 当前可用项对应 TASK-004~009 交付范围：工作台、Agent、数据集、评测方案、算子、
+   * 在线评测、轨迹导入、人工标注；轨迹分析与实验报告仍属后续任务。
    */
   available: boolean
 }
@@ -37,5 +37,5 @@ export const navigationItems: NavItem[] = [
   { path: '/experiments', title: '在线 / 离线评测', icon: VideoPlay, available: true },
   { path: '/imports', title: '离线轨迹导入', icon: Upload, available: true },
   { path: '/traces', title: '轨迹分析', icon: Share, available: false },
-  { path: '/annotations', title: '标注与报告', icon: Stamp, available: false },
+  { path: '/annotations', title: '标注与报告', icon: Stamp, available: true },
 ]

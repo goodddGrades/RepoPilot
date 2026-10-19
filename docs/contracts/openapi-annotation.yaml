@@ -1,0 +1,487 @@
+openapi: 3.1.0
+info:
+  title: RepoPilot 人工标注与失败归因 API（TASK-009）
+  version: 1.0.0
+  description: |
+    本文件定义 TASK-009 实际实现的 paths：人工复核任务的创建、查询、原子领取、提交、
+    审核与取消，以及"哪些 Run 需要人看"的派单建议。公共组件复用 `openapi-common.yaml`。
+
+    对应实现：
+    - `AnnotationController`、`AnnotationService`
+    - `AnnotationTaskMapper`（条件更新 + 乐观锁）、`AnnotationRecordMapper`
+    - `EvaluationVerdictQueryService`（跨模块只读门面）
+
+    ## 三条不可协商的语义
+
+    1. **人工结论不覆盖自动结论**。`evaluation_results` 全程只读。人工判断写在
+       `annotation_records` 里，每条记录都带 `originalVerdict`（复核当时的自动结论），
+       报告按 RAW / REVIEWED 两个视图分别呈现，而不是把人写的结论塞回自动结果列。
+
+    2. **并发靠数据库分胜负**。每个写操作都必须带 `expectedVersion`，
+       SQL 在同一条 `UPDATE` 里比对 `version` 与前置 `status` 并做 `version = version + 1`。
+       两个标注者同时点"领取"时只有一个影响 1 行，另一个得到 0 行并被转成
+       409 `OPTIMISTIC_LOCK_CONFLICT`——不存在"都以为自己领到了"的窗口。
+
+    3. **状态与历史同事务**。状态行与 `annotation_records` 在同一事务内写入，
+       任一步失败整体回滚，不会出现"状态变了但没有记录"。
+
+    ## 关于 operatorId
+
+    接口**不接受**调用方自称的 `operatorId`。V1 没有真实用户鉴权，
+    操作者由后端开发配置 `app.repopilot.annotation.dev-operator-id` 固定；
+    接受前端传入的身份等于让任何人可以冒充他人写审计记录。
+
+    ## 关于失败归因
+
+    `verdict=FAIL` 时 `failureCategory` 必填。可以显式填 `UNKNOWN`
+    （证据不足，不归因），但不能留空——留空会让失败归因报表出现"分母不明的分子"。
+servers:
+  - url: /
+paths:
+  /api/v1/annotation-tasks:
+    post:
+      operationId: createAnnotationTask
+      summary: 为 Run 创建人工复核任务
+      description: |
+        任务按 Run 建立，可选绑定单个算子 `evaluationJobId`。绑定时校验该 Job 确实属于
+        同一 Run——否则"针对某个算子的复核"会指向另一个 Run 的结论。
+
+        不做"同一 Run 是否已有未终态任务"的重复校验：那是派单建议的职责
+        （`GET /experiments/{id}/annotation-candidates`），显式重复派单是允许的。
+      parameters:
+        - $ref: './openapi-common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTaskRequest' }
+      responses:
+        '201':
+          description: 已创建（初始状态 PENDING，version=0，并写入一条 CLAIM 历史）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Task' }
+        '400':
+          $ref: './openapi-execution.yaml#/components/responses/ValidationError'
+        '404':
+          $ref: './openapi-execution.yaml#/components/responses/NotFound'
+        '409':
+          $ref: './openapi-execution.yaml#/components/responses/Conflict'
+    get:
+      operationId: listAnnotationTasks
+      summary: 标注任务列表（创建时间倒序）
+      parameters:
+        - name: status
+          in: query
+          description: 未知状态值返回 400，不做静默忽略。
+          schema: { $ref: '#/components/schemas/TaskStatus' }
+        - name: assigneeId
+          in: query
+          schema: { type: string }
+        - name: runId
+          in: query
+          schema: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: 一页任务（含各自的历史记录）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/TaskPage' }
+        '400':
+          $ref: './openapi-execution.yaml#/components/responses/ValidationError'
+
+  /api/v1/annotation-tasks/{id}:
+    get:
+      operationId: getAnnotationTask
+      summary: 标注任务详情（含完整历史）
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: 任务详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Task' }
+        '404':
+          $ref: './openapi-execution.yaml#/components/responses/NotFound'
+
+  /api/v1/experiments/{id}/annotation-candidates:
+    get:
+      operationId: listAnnotationCandidates
+      summary: 建议人工复核的 Run
+      description: |
+        只挑**真正需要人看**的 Run：
+        - 技术状态 `FAILED` / `TIMED_OUT` / `CANCELLED`（算不出结论）；
+        - 技术上 `COMPLETED` 但任一算子判 `FAIL`（机器认为质量不达标）。
+
+        全部 PASS 的 Run 不进队列——那会让工作台被噪音淹没。
+        已有未终态标注任务的 Run 也不再重复建议。
+      parameters:
+        - $ref: './openapi-execution.yaml#/components/parameters/ExperimentId'
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: 建议列表；`autoVerdict` 缺失表示该 Run 没有质量结论（技术失败）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/DispatchHint' }
+        '404':
+          $ref: './openapi-execution.yaml#/components/responses/NotFound'
+
+  /api/v1/annotation-tasks/{id}/claim:
+    post:
+      operationId: claimAnnotationTask
+      summary: 原子领取
+      description: |
+        SQL 条件为 `version = :expectedVersion AND status IN (PENDING, RETURNED)
+        AND (assignee_id IS NULL OR assignee_id = :operator)`，
+        并在同一句里 `version = version + 1`。
+
+        已领取的任务只能被原领取者继续操作；他人调用得到 0 行影响数并返回 409。
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+        - $ref: './openapi-common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VersionRequest' }
+      responses:
+        '200':
+          description: 已领取（状态 CLAIMED，version+1，追加一条 CLAIM 历史）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Task' }
+        '400':
+          $ref: './openapi-execution.yaml#/components/responses/ValidationError'
+        '404':
+          $ref: './openapi-execution.yaml#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/OptimisticLockConflict'
+
+  /api/v1/annotation-tasks/{id}/submit:
+    post:
+      operationId: submitAnnotation
+      summary: 提交标注
+      description: |
+        仅当前领取者、且仍处于 `CLAIMED` 时可提交。
+
+        `verdict=FAIL` 时 `failureCategory` 必填（可为显式的 `UNKNOWN`）；
+        `evidence` 必须是数组且不超过 50 条，防止把整段轨迹塞进一次标注。
+
+        本操作**只写** `annotation_records`，绝不修改 `evaluation_results`。
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+        - $ref: './openapi-common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SubmitRequest' }
+      responses:
+        '200':
+          description: 已提交（状态 SUBMITTED，追加一条带 originalVerdict 的 SUBMIT 历史）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Task' }
+        '400':
+          $ref: './openapi-execution.yaml#/components/responses/ValidationError'
+        '404':
+          $ref: './openapi-execution.yaml#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/OptimisticLockConflict'
+
+  /api/v1/annotation-tasks/{id}/review:
+    post:
+      operationId: reviewAnnotation
+      summary: 审核（通过或退回）
+      description: |
+        仅 `SUBMITTED` 可审核。`approved` 必须显式给出——省略会被 400 拒绝，
+        而不是默认通过。
+
+        退回（`approved=false`）必须给 `reason`，且保留 `assignee_id`，
+        使原标注者可以继续处理；全部历史保留，重提不会覆盖旧记录。
+
+        审核记录保存**审核者认可的最终标注快照**（verdict/category/reason/evidence），
+        取自该任务最后一次 `SUBMIT`；审核者可通过 `failureCategory` / `evidence` 覆盖。
+        报告的 REVIEWED 视图只读最新的有效 `REVIEW` 记录。
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+        - $ref: './openapi-common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewRequest' }
+      responses:
+        '200':
+          description: 已审核（REVIEWED）或已退回（RETURNED）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Task' }
+        '400':
+          $ref: './openapi-execution.yaml#/components/responses/ValidationError'
+        '404':
+          $ref: './openapi-execution.yaml#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/OptimisticLockConflict'
+
+  /api/v1/annotation-tasks/{id}/cancel:
+    post:
+      operationId: cancelAnnotation
+      summary: 取消任务
+      description: |
+        允许从 `PENDING` / `CLAIMED` / `SUBMITTED` / `RETURNED` 取消；
+        `REVIEWED` 是终态，取消返回 409 `INVALID_STATE_TRANSITION`。
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+        - $ref: './openapi-common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancelRequest' }
+      responses:
+        '200':
+          description: 已取消
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Task' }
+        '400':
+          $ref: './openapi-execution.yaml#/components/responses/ValidationError'
+        '404':
+          $ref: './openapi-execution.yaml#/components/responses/NotFound'
+        '409':
+          $ref: './openapi-execution.yaml#/components/responses/Conflict'
+
+components:
+  parameters:
+    TaskId:
+      in: path
+      name: id
+      required: true
+      schema: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+
+  responses:
+    OptimisticLockConflict:
+      description: |
+        版本或状态已被他人更新（`OPTIMISTIC_LOCK_CONFLICT`）。
+        `errors` 里带当前版本，客户端应提示"刷新后重试"而不是自动重试覆盖。
+      content:
+        application/json:
+          schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+
+  schemas:
+    TaskStatus:
+      type: string
+      enum: [PENDING, CLAIMED, SUBMITTED, REVIEWED, RETURNED, CANCELLED]
+
+    Action:
+      type: string
+      enum: [CLAIM, SUBMIT, REVIEW, RETURN, CANCEL]
+
+    Verdict:
+      type: string
+      enum: [PASS, FAIL, INDETERMINATE, NOT_APPLICABLE]
+
+    FailureCategory:
+      type: string
+      description: |
+        失败归因分类。`UNKNOWN` 是**显式的"证据不足，不归因"**，不是兜底：
+        随便挑一个类别会让归因统计看起来完整而实则空洞。
+      enum:
+        - MODEL_REASONING
+        - TOOL_USE
+        - RETRIEVAL
+        - CONTEXT
+        - ENVIRONMENT
+        - DATA_QUALITY
+        - EVALUATOR
+        - OTHER
+        - UNKNOWN
+
+    CreateTaskRequest:
+      type: object
+      required: [runId]
+      properties:
+        runId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        evaluationJobId:
+          allOf: [{ $ref: './openapi-common.yaml#/components/schemas/Ulid' }]
+          description: 可选。给出时必须属于同一 Run，否则 400。
+
+    VersionRequest:
+      type: object
+      required: [expectedVersion]
+      properties:
+        expectedVersion:
+          type: integer
+          minimum: 0
+          description: 客户端读到的版本。缺失即 400——没有版本就没有并发保护。
+
+    SubmitRequest:
+      allOf:
+        - $ref: '#/components/schemas/VersionRequest'
+        - type: object
+          required: [verdict, reason]
+          properties:
+            verdict: { $ref: '#/components/schemas/Verdict' }
+            failureCategory:
+              allOf: [{ $ref: '#/components/schemas/FailureCategory' }]
+              description: verdict=FAIL 时必填；未注册的值返回 400，不静默降级为 OTHER。
+            reason:
+              type: string
+              minLength: 1
+              description: 判定依据。没有依据的标注无法被复核。
+            evidence:
+              type: array
+              maxItems: 50
+              items: {}
+              description: 证据引用（事件/片段）。缺失按空数组处理。
+
+    ReviewRequest:
+      allOf:
+        - $ref: '#/components/schemas/VersionRequest'
+        - type: object
+          required: [approved]
+          properties:
+            approved:
+              type: boolean
+              description: 必须显式给出。false 时 `reason` 必填。
+            reason: { type: string }
+            failureCategory:
+              allOf: [{ $ref: '#/components/schemas/FailureCategory' }]
+              description: 审核者覆盖分类；不给则沿用最后一次 SUBMIT 的分类。
+            evidence:
+              type: array
+              maxItems: 50
+              items: {}
+              description: 审核者补充的证据；不给则沿用最后一次 SUBMIT 的证据。
+
+    CancelRequest:
+      allOf:
+        - $ref: '#/components/schemas/VersionRequest'
+        - type: object
+          required: [reason]
+          properties:
+            reason: { type: string, minLength: 1 }
+
+    Record:
+      type: object
+      required: [id, operatorId, action, createdAt]
+      properties:
+        id: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        operatorId:
+          type: string
+          description: 由后端配置固定，接口不接受调用方自称的身份。
+        action: { $ref: '#/components/schemas/Action' }
+        verdict:
+          allOf: [{ $ref: '#/components/schemas/Verdict' }]
+          description: 人工给出的判定；CLAIM / CANCEL 等动作没有判定。
+        failureCategory: { $ref: '#/components/schemas/FailureCategory' }
+        reason: { type: string }
+        evidence:
+          description: 证据引用数组；未提供时为空数组。
+        originalVerdict:
+          allOf: [{ $ref: '#/components/schemas/Verdict' }]
+          description: |
+            该记录对应时刻被复核的**自动评测结论**。
+            任务未绑定 `evaluationJobId` 或该 Job 没有结论时缺失——
+            缺失表示"没有自动结论"，不表示 PASS。
+        createdAt: { type: string, format: date-time }
+
+    Task:
+      type: object
+      required: [id, runId, status, version, createdAt, updatedAt, records]
+      properties:
+        id: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        runId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        evaluationJobId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        assigneeId: { type: string }
+        version:
+          type: integer
+          description: 乐观锁版本，每个动作 +1。写操作必须回传它。
+        claimedAt: { type: string, format: date-time }
+        submittedAt: { type: string, format: date-time }
+        reviewedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        records:
+          type: array
+          description: 按 `(created_at, id)` 升序的完整历史，只追加不修改。
+          items: { $ref: '#/components/schemas/Record' }
+
+    TaskPage:
+      type: object
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Task' }
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer, format: int64 }
+
+    DispatchHint:
+      type: object
+      required: [runId, reason, createdAt]
+      properties:
+        runId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        evaluationJobId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        reason:
+          type: string
+          description: 为什么需要人看，例如"技术状态 FAILED"或"自动评测判定未通过"。
+        autoVerdict:
+          allOf: [{ $ref: '#/components/schemas/Verdict' }]
+          description: 机器给出的结论；技术失败时缺失（不是 PASS，也不是 FAIL）。
+        createdAt: { type: string, format: date-time }

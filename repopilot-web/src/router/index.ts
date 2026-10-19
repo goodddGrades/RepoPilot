@@ -72,6 +72,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '离线轨迹导入' },
       },
       {
+        path: 'annotations',
+        name: 'annotations',
+        component: () => import('@/views/AnnotationWorkbenchView.vue'),
+        meta: { title: '标注与报告' },
+      },
+      {
         path: 'runs/:id',
         name: 'run-detail',
         component: () => import('@/views/RunDetailView.vue'),

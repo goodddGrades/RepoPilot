@@ -2,7 +2,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Refresh } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 
+import * as annotationApi from '@/api/annotations'
 import * as experimentApi from '@/api/experiments'
 import TracePanel from '@/components/TracePanel.vue'
 import type {
@@ -129,6 +131,41 @@ const evaluationPending = computed(
   () => run.value?.status === 'EVALUATING' && pendingJobs.value > 0,
 )
 
+/**
+ * 该 Run 是否需要人来判断。
+ *
+ * 判定规则与后端派单建议一致：技术状态失败（算不出结论），
+ * 或已完成但任一算子判 FAIL（机器认为质量不达标）。
+ * 全部 PASS 的 Run 不提示——那会让"提交人工复核"变成无意义的点击。
+ */
+const needsHumanReview = computed(() => {
+  const current = run.value
+  if (!current) {
+    return false
+  }
+  if (current.status === 'FAILED' || current.status === 'TIMED_OUT' || current.status === 'CANCELLED') {
+    return true
+  }
+  return jobs.value.some((job) => job.result?.verdict === 'FAIL')
+})
+
+const creatingTask = ref(false)
+
+async function createReviewTask(): Promise<void> {
+  creatingTask.value = true
+  try {
+    // 不传 evaluationJobId：按 Run 建任务，覆盖"这个 Run 整体需要人看"，
+    // 而不是替标注人预设"问题出在某个算子上"。
+    await annotationApi.createAnnotationTask(runId.value)
+    ElMessage.success('已创建人工复核任务，可在「标注与报告」中处理')
+    await router.push('/annotations')
+  } catch (error) {
+    toastError(error, '创建人工复核任务失败')
+  } finally {
+    creatingTask.value = false
+  }
+}
+
 const outputText = computed(() => stringifyJson(detail.value?.output) || '（无输出正文）')
 const observationText = computed(() => stringifyJson(detail.value?.observationMetadata) || '（无）')
 
@@ -165,9 +202,27 @@ const traceCoverage = computed(() => {
         <el-tag v-if="run" :type="runStatusTag[run.status as RunStatus]" effect="dark">
           {{ runStatusText[run.status as RunStatus] }}
         </el-tag>
+        <el-button
+          v-if="run && needsHumanReview"
+          type="warning"
+          plain
+          :loading="creatingTask"
+          @click="createReviewTask"
+        >
+          提交人工复核
+        </el-button>
         <el-button :icon="Refresh" @click="load">刷新</el-button>
       </div>
     </header>
+
+    <el-alert
+      v-if="run && needsHumanReview"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="该 Run 需要人工判断"
+      description="自动评测判未通过或算不出结论。提交人工复核后，标注人给出的结论会单独存放，不会覆盖这里的自动结果。"
+    />
 
     <el-alert
       v-if="evaluationPending"

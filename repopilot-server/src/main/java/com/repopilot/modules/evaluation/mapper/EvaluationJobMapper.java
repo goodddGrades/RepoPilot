@@ -68,6 +68,36 @@ public interface EvaluationJobMapper {
             """)
     Optional<EvaluationJob> findById(@Param("id") String id);
 
+    /**
+     * 某个 Run 在**所有批次**下的 Job（TASK-009：人工复核需要看到该 Run 的全部自动结论）。
+     *
+     * <p>刻意不按批次过滤：复核对象是 Run 本身，而同一 Run 可能被重评过多次，
+     * 复核者需要看到全部历史结论，而不是只看到当前批次那一份。
+     */
+    @Select("""
+            SELECT id,
+                   run_id,
+                   batch_id,
+                   evaluation_plan_version_id,
+                   evaluation_plan_item_id,
+                   status,
+                   attempt_count,
+                   active_attempt_id,
+                   next_retry_at,
+                   input_hash,
+                   started_at,
+                   finished_at,
+                   error_code,
+                   error_message,
+                   created_at,
+                   updated_at
+              FROM evaluation_jobs
+             WHERE run_id = #{runId,typeHandler=com.repopilot.common.id.UlidTypeHandler}
+             ORDER BY batch_id ASC, created_at ASC, id ASC
+            """)
+    List<EvaluationJob> findByRunIdsOfRun(
+            @Param("runId") String runId);
+
     // ---- TASK-004：完成封口后幂等生成 PENDING Job（规则引擎在 TASK-007） ----
 
     /**
