@@ -227,3 +227,19 @@ scope.resolvedFrom=NONE  hasMore=false
    再次漏网。建议后续把"OpenAPI 可解析 + `$ref` 可解析"加进 `verify_design.py`。
 6. **孤儿清理会删"无元数据"的存储对象**：默认宽限期 24h，只在对象确实没有 `artifacts` 行时删除。
    它不修复"有元数据但对象丢失"的反向损坏——那是数据损坏，应告警而不是静默重建。
+
+## 8. CI 实跑
+
+Commit `b0c226d` 推送到 `origin/develop`（fast-forward，`96aefb5..b0c226d`），
+GitHub Actions run **39241959291**，5 个 Job 全部通过：
+
+| Job | 结果 |
+| --- | --- |
+| 后端（MySQL 8.0.36 + RabbitMQ） | 单元 75 / 集成 **136**，0 失败 0 跳过 |
+| 后端（MySQL 8.0 + RabbitMQ） | 单元 75 / 集成 **136**，0 失败 0 跳过 |
+| Web（构建） | `npm run build`（含 `vue-tsc --noEmit`）通过，`built in 7.11s` |
+| Worker（pytest） | 28 passed |
+| 设计字典自检 | 迁移 6 个一致且冻结未改；76 个 Java 文件 / 28 个 Mapper 一致 |
+
+CI 里没有任何 `@Disabled`、跳过或"期望失败"的用例；集成测试要求就绪探针真的返回 UP
+（`REPOPILOT_IT_REQUIRE_ALL_UP=true`），迁移版本校验为 `1,2,3,4,5,6,7`。
