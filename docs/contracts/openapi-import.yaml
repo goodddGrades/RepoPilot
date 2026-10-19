@@ -1,0 +1,428 @@
+openapi: 3.1.0
+info:
+  title: RepoPilot 文件、离线导入与轨迹 API（TASK-005）
+  version: 1.0.0
+  description: |
+    本文件补齐 TASK-005 在真实工程中实现的 paths：业务侧 Artifact 上传/读取/下载、
+    离线轨迹导入（批次创建、状态查询、错误明细、取消）。公共组件（统一响应信封、分页、
+    ULID、Idempotency-Key）复用 `openapi-common.yaml`，此处不重复定义。
+
+    对应实现：
+    - `ArtifactController`、`ArtifactService`、`LocalFileSystemArtifactStorage`
+    - `ImportController`、`ImportService`、`OfflineRunValidator`
+    - 行级 JSON 结构见 `offline-run.schema.json`；导入语义见
+      `docs/modules/offline-evaluation.md` 与 `docs/architecture/06-reliability-design.md`
+
+    本轮只实现 `importType=OFFLINE_RUNS`。`DATASET_CASES` 走 TASK-003 的整批原子接口
+    `POST /api/v1/dataset-versions/{id}/cases:import`，传入本接口会返回 400 并指向该入口——
+    依据是可靠性设计：`DATASET_CASES` 只可能 `COMPLETED/FAILED`，`PARTIAL_FAILED`
+    是给离线轨迹行级失败保留的状态。
+
+    `GET /runs/{id}/events` 仍属 TASK-006 的游标检索与回放范围（cursor 编码、签名、
+    `allAttempts` 语义），本轮不实现，避免给出一个半成品的轨迹读取接口。
+servers:
+  - url: /
+paths:
+  /api/v1/artifacts:
+    post:
+      operationId: uploadArtifact
+      summary: 上传原文件或产物
+      description: |
+        `multipart/form-data`。服务端解析并校验长度与 `sha256`，先写存储再写元数据；
+        元数据写入失败会清理已落盘对象，不留孤儿文件。
+
+        响应**不回传** `objectKey`：存储路径属于实现细节，把本地路径暴露给调用方等于
+        泄露部署结构与磁盘布局。
+
+        用途区分：`artifactType=IMPORT_FILE` 时 `runId` 必须为空（导入原文件还不属于任何 Run）；
+        其余类型可关联 `runId`。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 单文件上限 20MiB
+                artifactType:
+                  type: string
+                  enum: [OUTPUT, STDOUT, EVIDENCE, IMPORT_FILE]
+                  default: IMPORT_FILE
+                runId:
+                  allOf:
+                    - $ref: './openapi-common.yaml#/components/schemas/Ulid'
+                  description: 已有 Run 的产物才给；导入原文件必须省略
+      responses:
+        '201':
+          description: 已存储
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Artifact' }
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          description: 文件超过 20MiB（容器层拒绝）
+
+  /api/v1/artifacts/{id}:
+    get:
+      operationId: getArtifact
+      summary: 读取 Artifact 元数据
+      parameters:
+        - $ref: '#/components/parameters/ArtifactId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Artifact' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/artifacts/{id}/download:
+    get:
+      operationId: downloadArtifact
+      summary: 下载原始字节
+      description: |
+        返回**原始字节流**而不是 JSON 信封：二进制资源套一层 base64 只会让调用方多一次解码。
+        响应头 `X-Content-Sha256` 给出内容摘要，调用方可与元数据比对。
+
+        出错（不存在、存储丢失、摘要不一致）仍返回公共错误 JSON，因此本路径的失败响应
+        与其它接口同构。
+      parameters:
+        - $ref: '#/components/parameters/ArtifactId'
+      responses:
+        '200':
+          description: 文件内容
+          headers:
+            X-Content-Sha256:
+              schema: { type: string, pattern: '^[0-9a-f]{64}$' }
+              description: 内容 SHA-256
+            Content-Disposition:
+              schema: { type: string }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 存储内容与元数据摘要不一致（`STORAGE_INTEGRITY_ERROR`）
+          content:
+            application/json:
+              schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+
+  /api/v1/imports:
+    post:
+      operationId: createImport
+      summary: 创建导入批次
+      description: |
+        创建前先做**整文件级**校验（能否读取、摘要是否与 Artifact 元数据一致、是否非空、
+        行数与单行长度是否超限）。校验失败返回 400 且不建批次——否则调用方会拿到一个
+        永远 0 行的批次，还要自己解释"为什么什么都没发生"。
+
+        校验通过后写入 `PENDING` 批次并返回 202，逐行处理在后台串行进行。
+        行级错误不会让本请求失败：它们进入 `import_errors` 并以 `PARTIAL_FAILED` 收尾。
+
+        `experimentId` 对 `OFFLINE_RUNS` 必填，且实验必须是 `DRAFT`；实验已开始或已取消
+        时返回 409（`INVALID_STATE_TRANSITION`），批次不予创建。
+      parameters:
+        - $ref: './openapi-common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateImportRequest' }
+      responses:
+        '202':
+          description: 已受理
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ImportBatch' }
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    get:
+      operationId: listImports
+      summary: 导入批次分页列表
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: importType
+          in: query
+          schema: { type: string, enum: [DATASET_CASES, OFFLINE_RUNS] }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ImportStatus' }
+        - name: experimentId
+          in: query
+          schema: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        - name: datasetVersionId
+          in: query
+          schema: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: './openapi-common.yaml#/components/schemas/Page'
+                          - type: object
+                            properties:
+                              items:
+                                type: array
+                                items: { $ref: '#/components/schemas/ImportBatch' }
+
+  /api/v1/imports/{id}:
+    get:
+      operationId: getImport
+      summary: 批次进度与计数
+      description: |
+        `totalCount` 只在批次进入终态后才有意义：处理开始时还不知道总行数，
+        因此用 `totalKnown` 显式区分"0 行"和"还不知道"。前端据此展示
+        "已处理 N 行"而不是一个假的百分比。
+      parameters:
+        - $ref: '#/components/parameters/ImportId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ImportBatch' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/imports/{id}/errors:
+    get:
+      operationId: listImportErrors
+      summary: 行级错误明细
+      description: |
+        只返回行号、错误码与说明，**不回显原始行内容**：轨迹里可能带提示词、模型输出
+        甚至凭据，把它们复制进错误表等于把敏感数据扩散到第二个地方。
+      parameters:
+        - $ref: '#/components/parameters/ImportId'
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: './openapi-common.yaml#/components/schemas/Page'
+                          - type: object
+                            properties:
+                              items:
+                                type: array
+                                items: { $ref: '#/components/schemas/ImportError' }
+
+  /api/v1/imports/{id}/cancel:
+    post:
+      operationId: cancelImport
+      summary: 取消批次
+      description: |
+        批次立即进入 `CANCELLED` 终态；**已提交的行保留**，不会回滚。
+        处理线程在下一行的写入事务里发现批次已取消即停止，因此取消不会在检查与写入之间
+        撕开一个窗口。
+      parameters:
+        - $ref: '#/components/parameters/ImportId'
+      responses:
+        '202':
+          description: 已受理取消
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ImportBatch' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 批次已终态，无法取消
+          content:
+            application/json:
+              schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+
+components:
+  parameters:
+    ArtifactId:
+      in: path
+      name: id
+      required: true
+      schema: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+    ImportId:
+      in: path
+      name: id
+      required: true
+      schema: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+
+  responses:
+    ValidationError:
+      description: 参数或业务校验失败（`VALIDATION_ERROR`），`errors` 给出字段级明细
+      content:
+        application/json:
+          schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+    NotFound:
+      description: 资源不存在（`NOT_FOUND`）
+      content:
+        application/json:
+          schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+    Conflict:
+      description: 状态或幂等冲突（`INVALID_STATE_TRANSITION` / `IDEMPOTENCY_CONFLICT`）
+      content:
+        application/json:
+          schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+
+  schemas:
+    Artifact:
+      type: object
+      required: [id, artifactType, contentType, sizeBytes, sha256, status, createdAt]
+      description: 刻意不含 `objectKey`——存储路径不外泄。
+      properties:
+        id: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        runId:
+          allOf:
+            - $ref: './openapi-common.yaml#/components/schemas/Ulid'
+          description: 导入原文件没有 Run，该字段缺省
+        artifactType:
+          type: string
+          enum: [OUTPUT, STDOUT, EVIDENCE, IMPORT_FILE]
+        contentType: { type: string }
+        sizeBytes: { type: integer, minimum: 0, maximum: 20971520 }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        status: { type: string, enum: [READY, DELETED] }
+        createdAt: { type: string, format: date-time }
+
+    ImportStatus:
+      type: string
+      enum: [PENDING, RUNNING, COMPLETED, PARTIAL_FAILED, FAILED, CANCELLED]
+      description: |
+        `OFFLINE_RUNS` 可能出现 `PARTIAL_FAILED`（部分行成功、部分行被拒绝）；
+        整体无成功行时为 `FAILED`；取消后保持 `CANCELLED`，不会被收尾逻辑改写成其它状态。
+
+    CreateImportRequest:
+      type: object
+      required: [importType, datasetVersionId, fileArtifactId]
+      properties:
+        importType:
+          type: string
+          enum: [OFFLINE_RUNS]
+          description: 本轮只受理 `OFFLINE_RUNS`；`DATASET_CASES` 请用 `cases:import`
+        datasetVersionId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        experimentId:
+          allOf:
+            - $ref: './openapi-common.yaml#/components/schemas/Ulid'
+          description: "`OFFLINE_RUNS` 必填，且实验必须是 `DRAFT`"
+        fileArtifactId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+
+    ImportBatch:
+      type: object
+      required:
+        - id
+        - importType
+        - status
+        - datasetVersionId
+        - fileArtifactId
+        - totalCount
+        - totalKnown
+        - processedCount
+        - successCount
+        - failedCount
+        - duplicateCount
+        - lastLineNo
+        - createdAt
+        - updatedAt
+      properties:
+        id: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        importType: { type: string, enum: [DATASET_CASES, OFFLINE_RUNS] }
+        status: { $ref: '#/components/schemas/ImportStatus' }
+        datasetVersionId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        experimentId:
+          allOf:
+            - $ref: './openapi-common.yaml#/components/schemas/Ulid'
+        fileArtifactId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        totalCount:
+          type: integer
+          minimum: 0
+          description: 非空行总数；`totalKnown=false` 时不可用于计算百分比
+        totalKnown:
+          type: boolean
+          description: 批次是否已进入终态（此时 `totalCount` 才可信）
+        processedCount:
+          type: integer
+          minimum: 0
+          description: "`successCount + failedCount`"
+        successCount: { type: integer, minimum: 0 }
+        failedCount: { type: integer, minimum: 0 }
+        duplicateCount:
+          type: integer
+          minimum: 0
+          description: "`successCount` 的子集：同一来源记录被再次导入而复用原 Run"
+        lastLineNo: { type: integer, minimum: 0 }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ImportError:
+      type: object
+      required: [lineNo, errorCode, errorMessage]
+      properties:
+        lineNo:
+          type: integer
+          minimum: 1
+          description: 原文件的物理行号，可直接在编辑器里跳转
+        errorCode:
+          type: string
+          maxLength: 64
+          description: |
+            常见取值：`INVALID_JSON`、`SCHEMA_VIOLATION`、`INVALID_TIMESTAMP`、
+            `INVALID_TIME_RANGE`、`CASE_NOT_FOUND`、`TARGET_NOT_FOUND`、
+            `REPEAT_INDEX_OUT_OF_RANGE`、`SOURCE_RECORD_CONFLICT`、`SLOT_CONFLICT`、
+            `IMPORT_CLOSED`
+        errorMessage: { type: string, maxLength: 1024 }

@@ -710,6 +710,16 @@ components:
       required: [run, traceEventCount, attempts, jobBatches, jobs]
       properties:
         run: { $ref: '#/components/schemas/Run' }
+        sourceSystem:
+          type: string
+          description: |
+            TASK-005 新增：离线导入的 Run 才有值，标识轨迹来自哪个外部系统
+            （如 `manual`、`litellm`）。在线执行的 Run 没有这个字段。
+        sourceRecordId:
+          type: string
+          description: |
+            TASK-005 新增：来源系统内的记录标识，与 `sourceSystem` 一起构成
+            `(实验, Target, sourceSystem, sourceRecordId)` 的来源身份，用于跨批次复用。
         output: { type: [object, 'null'] }
         outputArtifactId: { type: [string, 'null'] }
         usage: { type: [object, 'null'] }
