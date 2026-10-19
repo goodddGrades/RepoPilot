@@ -11,6 +11,7 @@ import com.repopilot.common.idempotency.IdempotencyDigest;
 import com.repopilot.common.idempotency.IdempotencyService;
 import com.repopilot.common.idempotency.IdempotentResult;
 import com.repopilot.common.registry.RunnerRegistry;
+import com.repopilot.common.reliability.service.OutboxWriter;
 import com.repopilot.common.state.ExperimentStatus;
 import com.repopilot.common.state.RunMode;
 import com.repopilot.common.state.RunStatus;
@@ -80,6 +81,7 @@ public class ExperimentService {
     private final RunnerRegistry runnerRegistry;
     private final IdempotencyService idempotency;
     private final ObjectMapper objectMapper;
+    private final OutboxWriter outbox;
     private final TransactionTemplate tx;
 
     public ExperimentService(ExperimentMapper experimentMapper,
@@ -93,6 +95,7 @@ public class ExperimentService {
                              RunnerRegistry runnerRegistry,
                              IdempotencyService idempotency,
                              ObjectMapper objectMapper,
+                             OutboxWriter outbox,
                              PlatformTransactionManager transactionManager) {
         this.experimentMapper = experimentMapper;
         this.targetMapper = targetMapper;
@@ -105,6 +108,7 @@ public class ExperimentService {
         this.runnerRegistry = runnerRegistry;
         this.idempotency = idempotency;
         this.objectMapper = objectMapper;
+        this.outbox = outbox;
         this.tx = new TransactionTemplate(transactionManager);
     }
 
@@ -380,6 +384,12 @@ public class ExperimentService {
             }
         }
         runStore.insertSlots(runs);
+        // 槽位与唤醒通知同事务：Run 已入库但通知丢失时，Worker 的周期领取还能兜住；
+        // 反过来（通知已发、Run 回滚）则会产生指向不存在 Run 的通知。
+        // 这里是 run.ready 的唯一来源——离线 Run 直接进评测，不经过执行阶段
+        for (EvaluationRun run : runs) {
+            outbox.writeRunReady(run.getId(), id);
+        }
 
         EvaluationBatch batch = batchService.createInitial(id, planVersion.getId(),
                 totalRuns, totalRuns * items.size(), SYSTEM_ACTOR, now);

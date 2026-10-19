@@ -69,6 +69,11 @@ abstract class AbstractExecutionIT extends AbstractApiIT {
         jdbc.update("DELETE FROM evaluation_runs");
         // Run 删完，批次才没有引用者（evaluation_runs.import_batch_id 反向依赖这里）
         jdbc.update("DELETE FROM import_batches");
+        // TASK-011：Outbox 是多态表（无外键），必须显式清理。
+        // 不清会让上一个用例的 PENDING 事件被本用例的发布扫描捞走，
+        // 断言"本轮发布了 N 条"就会数到别人的事件
+        jdbc.update("DELETE FROM outbox_events");
+        jdbc.update("DELETE FROM inbox_events");
     }
 
     /** 一次可用实验所需的已发布版本。 */

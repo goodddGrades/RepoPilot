@@ -40,4 +40,27 @@ public interface InboxEventMapper {
               WHERE id = #{id}
             """)
     Optional<InboxEvent> findById(@Param("id") String id);
+
+    // ---- TASK-011：消费去重 ----
+
+    /**
+     * 查同一 {@code (consumer_name, event_id)} 已记录的正文摘要。
+     *
+     * <p>用来区分两种"第二次见到"：<b>同内容</b>是正常重复（可以静默 ACK），
+     * <b>异内容</b>是数据损坏或上游 bug（必须隔离告警）。
+     * 二者的运维处置完全相反，所以必须能在 SQL 层查出摘要而不是只问"在不在"。
+     */
+    @Select("""
+            SELECT payload_hash FROM inbox_events
+             WHERE consumer_name = #{consumerName}
+               AND event_id = #{eventId,typeHandler=com.repopilot.common.id.UlidTypeHandler}
+            """)
+    Optional<String> findPayloadHash(@Param("consumerName") String consumerName,
+                                      @Param("eventId") String eventId);
+
+    /** 某消费者已处理的事件数：用于判断消息是否真被消费过。 */
+    @Select("""
+            SELECT COUNT(*) FROM inbox_events WHERE consumer_name = #{consumerName}
+            """)
+    long countByConsumer(@Param("consumerName") String consumerName);
 }

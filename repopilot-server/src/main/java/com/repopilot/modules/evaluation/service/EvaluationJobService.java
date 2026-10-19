@@ -2,6 +2,7 @@ package com.repopilot.modules.evaluation.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.repopilot.common.reliability.service.OutboxWriter;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.repopilot.common.hash.Sha256;
 import com.repopilot.common.id.Ulid;
@@ -36,14 +37,17 @@ public class EvaluationJobService {
     private final EvaluationJobMapper jobMapper;
     private final EvaluationBatchMapper batchMapper;
     private final EvaluationPlanVersionService planVersionService;
+    private final OutboxWriter outbox;
     private final ObjectMapper objectMapper;
 
     public EvaluationJobService(EvaluationJobMapper jobMapper, EvaluationBatchMapper batchMapper,
                                 EvaluationPlanVersionService planVersionService,
+                                OutboxWriter outbox,
                                 ObjectMapper objectMapper) {
         this.jobMapper = jobMapper;
         this.batchMapper = batchMapper;
         this.planVersionService = planVersionService;
+        this.outbox = outbox;
         this.objectMapper = objectMapper;
     }
 
@@ -80,6 +84,12 @@ public class EvaluationJobService {
         jobMapper.batchInsert(jobs);
         // 首批 Job 落库后批次才进入 RUNNING；这条更新是幂等的（只从 PENDING 出发）
         batchMapper.markRunning(batchId, now);
+        // Job 与唤醒通知同事务：Job 创建提交了而通知丢了，评测 Job 会一直 PENDING
+        // 直到 Worker 的周期领取兜底——能跑，但白白慢一个轮询周期。
+        // 反过来（通知提交、Job 回滚）则会产生指向不存在 Job 的通知，必须避免。
+        for (EvaluationJob job : jobs) {
+            outbox.writeEvaluationReady(job.getId(), runId);
+        }
         return jobs.size();
     }
 

@@ -2,6 +2,7 @@ package com.repopilot.modules.experiment.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.repopilot.common.reliability.service.OutboxWriter;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.repopilot.common.api.ErrorCode;
 import com.repopilot.common.exception.BusinessException;
@@ -95,6 +96,7 @@ public class WorkService {
     private final RunnerRegistry runnerRegistry;
     private final ArtifactStorage storage;
     private final WorkerProperties props;
+    private final OutboxWriter outbox;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate tx;
 
@@ -111,6 +113,7 @@ public class WorkService {
                        RunnerRegistry runnerRegistry,
                        ArtifactStorage storage,
                        WorkerProperties props,
+                       OutboxWriter outbox,
                        ObjectMapper objectMapper,
                        PlatformTransactionManager transactionManager) {
         this.runStore = runStore;
@@ -127,6 +130,7 @@ public class WorkService {
         this.runnerRegistry = runnerRegistry;
         this.storage = storage;
         this.props = props;
+        this.outbox = outbox;
         this.objectMapper = objectMapper;
         this.tx = new TransactionTemplate(transactionManager);
     }
@@ -492,7 +496,9 @@ public class WorkService {
         });
 
         if (outcome != null && !outcome.retryScheduled()) {
-            aggregation.aggregateIfSettled(runStore.requireRun(runIdOf(attemptId)).getExperimentId());
+            // 重试已耗尽 → Run 真正进入终态（FAILED / TIMED_OUT），这时才通知
+            aggregation.onRunTerminal(runIdOf(attemptId),
+                    runStore.requireRun(runIdOf(attemptId)).getExperimentId());
         }
         return new WorkerDtos.FailResult(attemptId,
                 outcome == null ? AttemptStatus.FAILED.name() : outcome.status(),
@@ -586,8 +592,27 @@ public class WorkService {
         Set<String> affectedExperiments = new HashSet<>();
         for (RunAttempt candidate : expired) {
             try {
-                boolean changed = Boolean.TRUE.equals(tx.execute(status -> reapOne(candidate.getId(), now)));
-                if (changed) {
+                // Run 进入终态才发通知：被新 Attempt 取代的旧 Attempt 只终结自己，Run 还在跑。
+                // 通知与 Attempt 终态在同一事务——否则回收提交成功而通知丢失时，
+                // 这个 Run 会永远停在 RUNNING 且无人知道。
+                boolean terminal = Boolean.TRUE.equals(tx.execute(status -> {
+                    boolean changed = reapOne(candidate.getId(), now);
+                    if (!changed) {
+                        return false;
+                    }
+                    return runStore.findAttempt(candidate.getId())
+                            .flatMap(a -> runStore.findRun(a.getRunId()))
+                            .filter(r -> RunStatus.COMPLETED == r.getStatus()
+                                    || RunStatus.FAILED == r.getStatus()
+                                    || RunStatus.TIMED_OUT == r.getStatus()
+                                    || RunStatus.CANCELLED == r.getStatus())
+                            .map(r -> {
+                                outbox.writeRunFinished(r.getId(), r.getExperimentId());
+                                return true;
+                            })
+                            .orElse(false);
+                }));
+                if (terminal) {
                     reaped++;
                 }
                 runStore.findAttempt(candidate.getId()).ifPresent(a ->

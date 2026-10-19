@@ -151,6 +151,38 @@ const statusCounts = computed(() => {
   return counts
 })
 
+/**
+ * 等待提示（TASK-011）。
+ *
+ * <p>用户看到 Run 停在「待入队 / 待领取」时，真正想知道的是"是不是坏了"。
+ * 这里明确说清两件事：等待是正常状态，以及**长时间不动最常见的原因是
+ * 没有 Worker 在领取**，而不是任务丢了——任务状态存在数据库里，
+ * 消息只是唤醒手段，丢了也会被重新送达。
+ *
+ * <p>刻意不展示 Outbox、队列、routingKey 这些内部概念：用户无法据此行动，
+ * 看到只会更困惑。要排查的人去看运维手册（docs/modules/messaging-reliability.md）。
+ */
+const waitingRuns = computed(() => (statusCounts.value.PENDING ?? 0) + (statusCounts.value.QUEUED ?? 0))
+const waitingHintVisible = computed(
+  () =>
+    experiment.value !== null &&
+    (experiment.value.status === 'QUEUED' || experiment.value.status === 'RUNNING') &&
+    waitingRuns.value > 0,
+)
+
+const waitingHint = computed(() => {
+  const queued = statusCounts.value.QUEUED ?? 0
+  const pending = statusCounts.value.PENDING ?? 0
+  const parts: string[] = []
+  if (queued > 0) parts.push(`${queued} 个待领取`)
+  if (pending > 0) parts.push(`${pending} 个待入队`)
+  return (
+    `${parts.join('、')}正在等待 Worker 领取。` +
+    '任务已存在数据库中，排队不等于出错——若长时间没有进展，通常是没有运行中的 Worker，' +
+    '而不是任务丢失。'
+  )
+})
+
 /* ---------------- 评测批次 ---------------- */
 
 const batches = ref<EvaluationBatchView[]>([])
@@ -335,6 +367,14 @@ function batchCancelable(batch: EvaluationBatchView): boolean {
         show-icon
         :closable="false"
         title="草稿阶段还没有 Run。点「提交」会校验版本状态、Runner 能力与数量上限，然后一次性生成槽位。"
+      />
+      <el-alert
+        v-if="waitingHintVisible"
+        style="margin-top: 12px"
+        type="info"
+        show-icon
+        :closable="false"
+        :title="waitingHint"
       />
       <el-alert
         v-if="experiment.status === 'DRAFT' && experiment.mode === 'OFFLINE'"

@@ -7,18 +7,20 @@
 
 1. [`00-product-scope.md`](./00-product-scope.md) — 产品范围、V1 边界、交付阶段
 2. [`architecture/01-system-overview.md`](./architecture/01-system-overview.md) — 组件职责与调度分期
-3. [`reviews/task-003-delivery.md`](./reviews/task-003-delivery.md) — **TASK-003 实施交付报告：Agent/数据集/评测方案 API、JSONL 整批导入、前端页面与并发验收（最新）**
-4. [`reviews/task-003-contract-revision.md`](./reviews/task-003-contract-revision.md) — TASK-003 契约修订（2026-10-18 裁决）：JSONL 整批原子、重复 caseKey 报错、`DRAFT→ARCHIVED`
-5. [`reviews/task-002-implementation.md`](./reviews/task-002-implementation.md) — TASK-002 实施交付报告：迁移、实体、测试与偏差
-6. [`reviews/rabbitmq-local-verification.md`](./reviews/rabbitmq-local-verification.md) — 本机 RabbitMQ 3.13.7 实跑核查与收发闭环（readiness 全 UP 已在本机执行）
-7. [`reviews/task-002-actual-ddl.sql`](./reviews/task-002-actual-ddl.sql) — TASK-002 实际 DDL（空库 Flyway V1..V7 后由 mysqldump 导出）
-8. [`reviews/task-002-ddl-indexes.md`](./reviews/task-002-ddl-indexes.md) — TASK-002 实际 DDL 索引清单（由 information_schema 导出）
-9. [`reviews/task-002-v121-delta.md`](./reviews/task-002-v121-delta.md) — TASK-002 设计 V1.2.1：INITIAL 批次唯一、LATEST 语义、离线单次上传
-10. [`reviews/task-002-freeze.md`](./reviews/task-002-freeze.md) — TASK-002 设计冻结 V1.2：批次 Run 集合、跨实验约束、报告默认语义、索引审计
-11. [`reviews/task-002-revision.md`](./reviews/task-002-revision.md) — TASK-002 修订：评测批次与契约收敛
-12. [`reviews/task-002-delta.md`](./reviews/task-002-delta.md) — 相对早期草案的修订（为什么这样做）
-13. [`reviews/repository-alignment.md`](./reviews/repository-alignment.md) — 本仓库核对结果、实际版本与偏差
-14. [`reviews/design-merge-report.md`](./reviews/design-merge-report.md) — 设计包合并时的冲突清单与处置
+3. [`reviews/task-011-delivery.md`](./reviews/task-011-delivery.md) — **TASK-011 实施交付报告：Outbox/RabbitMQ、inbox 去重、13 个故障演练用例与已知限制（最新）**
+4. [`reviews/task-010-delivery.md`](./reviews/task-010-delivery.md) — TASK-010 实施交付报告：实验报告、配对回归、质量门禁
+5. [`reviews/task-003-delivery.md`](./reviews/task-003-delivery.md) — TASK-003 实施交付报告：Agent/数据集/评测方案 API、JSONL 整批导入、前端页面与并发验收
+6. [`reviews/task-003-contract-revision.md`](./reviews/task-003-contract-revision.md) — TASK-003 契约修订（2026-10-18 裁决）：JSONL 整批原子、重复 caseKey 报错、`DRAFT→ARCHIVED`
+7. [`reviews/task-002-implementation.md`](./reviews/task-002-implementation.md) — TASK-002 实施交付报告：迁移、实体、测试与偏差
+8. [`reviews/rabbitmq-local-verification.md`](./reviews/rabbitmq-local-verification.md) — 本机 RabbitMQ 3.13.7 实跑核查与收发闭环（readiness 全 UP 已在本机执行）
+9. [`reviews/task-002-actual-ddl.sql`](./reviews/task-002-actual-ddl.sql) — TASK-002 实际 DDL（空库 Flyway V1..V7 后由 mysqldump 导出）
+10. [`reviews/task-002-ddl-indexes.md`](./reviews/task-002-ddl-indexes.md) — TASK-002 实际 DDL 索引清单（由 information_schema 导出）
+11. [`reviews/task-002-v121-delta.md`](./reviews/task-002-v121-delta.md) — TASK-002 设计 V1.2.1：INITIAL 批次唯一、LATEST 语义、离线单次上传
+12. [`reviews/task-002-freeze.md`](./reviews/task-002-freeze.md) — TASK-002 设计冻结 V1.2：批次 Run 集合、跨实验约束、报告默认语义、索引审计
+13. [`reviews/task-002-revision.md`](./reviews/task-002-revision.md) — TASK-002 修订：评测批次与契约收敛
+14. [`reviews/task-002-delta.md`](./reviews/task-002-delta.md) — 相对早期草案的修订（为什么这样做）
+15. [`reviews/repository-alignment.md`](./reviews/repository-alignment.md) — 本仓库核对结果、实际版本与偏差
+16. [`reviews/design-merge-report.md`](./reviews/design-merge-report.md) — 设计包合并时的冲突清单与处置
 
 ## 全局架构
 
@@ -41,6 +43,7 @@
 | [`modules/evaluation-engine.md`](./modules/evaluation-engine.md) | TASK-007 起 |
 | [`modules/annotation-system.md`](./modules/annotation-system.md) | TASK-009 |
 | [`modules/experiment-analysis.md`](./modules/experiment-analysis.md) | TASK-010 |
+| [`modules/messaging-reliability.md`](./modules/messaging-reliability.md) | TASK-011（**运维手册**：Outbox/Inbox 排查、手动重投递、指标、保留策略） |
 | [`modules/frontend-design.md`](./modules/frontend-design.md) | TASK-003 起逐步落地 |
 
 ## 机器可读契约
@@ -56,6 +59,7 @@
 | [`contracts/openapi-evaluation.yaml`](./contracts/openapi-evaluation.yaml) | 评测执行（重评批次/取消、评测 Attempt 心跳与结论提交）路由与 Schema |
 | [`contracts/openapi-annotation.yaml`](./contracts/openapi-annotation.yaml) | 人工标注与失败归因（复核任务创建/原子领取/提交/审核/取消、派单建议）路由与 Schema |
 | [`contracts/openapi-reporting.yaml`](./contracts/openapi-reporting.yaml) | 实验报告（`GET /experiments/{id}/report`：槽位级指标/配对回归/门禁）路由与 Schema |
+| [`contracts/openapi-messaging.yaml`](./contracts/openapi-messaging.yaml) | 消息可靠性（`POST /internal/v1/notifications/accept`：唤醒登记/inbox 去重/隔离）路由与 Schema |
 | [`contracts/event-envelope.schema.json`](./contracts/event-envelope.schema.json) | 事件信封 |
 | [`contracts/trace-event.schema.json`](./contracts/trace-event.schema.json) | 轨迹事件 |
 | [`contracts/dataset-case.schema.json`](./contracts/dataset-case.schema.json) | 数据集样本 |

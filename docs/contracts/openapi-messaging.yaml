@@ -1,0 +1,185 @@
+openapi: 3.1.0
+info:
+  title: RepoPilot 消息可靠性 API（TASK-011）
+  version: 1.0.0
+  description: |
+    本文件描述 TASK-011 在真实工程中落地的消息侧接口：**通知唤醒入口**。
+
+    公共组件（统一响应信封、分页、ULID、Idempotency-Key）复用 `openapi-common.yaml`，
+    事件信封结构见 `event-envelope.schema.json`，此处不重复定义。
+
+    对应实现：
+    - `common/reliability/web/NotificationController`
+    - `common/reliability/service/InboxService`、`common/reliability/mapper/InboxEventMapper`
+    - `common/reliability/service/OutboxPublisherService`、`common/reliability/service/OutboxScheduler`
+    - 可靠性约束见 `docs/architecture/06-reliability-design.md` 第 64-72 行
+
+    **这个接口不创建 Run/Job，也不执行任何长任务。** 它只做短事务的 inbox 去重登记，
+    收到 200 后消费者唤醒本地领取循环，真正的任务仍走数据库领取协议
+    （`POST /internal/v1/work/claim`）。让通知入口顺手跑任务意味着在一个 HTTP 请求里
+    持有 MQ 消息的未确认状态，一个慢任务就会占满 prefetch 配额并拖垮整个消费者。
+
+    **Outbox 没有对外写接口，这是有意的**：Outbox 行由业务事务在同一事务内写入，
+    人工重新投递走运维通道而非用户 API，避免用户绕过业务状态机直接改消息状态。
+servers:
+  - url: /
+
+paths:
+  /internal/v1/notifications/accept:
+    post:
+      operationId: acceptNotification
+      summary: 登记一条唤醒通知（inbox 去重）
+      description: |
+        消费侧入口。请求体是 `{consumerName, event}`，`event` 是完整的事件信封。
+
+        **它不返回任务内容**：响应只有 `eventId` 与 `resourceId`，
+        消费者拿到后立刻 ACK，再去数据库领取。消息是唤醒信号，不是数据通道——
+        信封里放正文意味着待评测代码的输出、模型返回甚至密钥会进入 MQ，
+        需要另一套清理与脱敏策略，而它唯一的作用只是省掉一次数据库查询。
+
+        ## 状态码语义（不可随意更改）
+
+        | 情形 | HTTP | `status` | 消费者应当 |
+        | --- | --- | --- | --- |
+        | 首次登记 | 200 | `ACCEPTED` | ACK，唤醒领取循环 |
+        | 已处理过的同内容消息 | 200 | `DUPLICATE` | ACK，**不要**重试 |
+        | 同 eventId 但内容不同 | 409 `RESOURCE_CONFLICT` | — | 进隔离队列，停止重试并告警 |
+        | 信封版本不受支持 | 400 `UNSUPPORTED_EVENT_VERSION` | — | 进隔离队列，停止重试 |
+        | 信封缺必填字段 | 400 `VALIDATION_ERROR` | — | 进隔离队列，停止重试 |
+
+        **重复必须返回 200。** 重复投递是协议正常现象（confirm 丢失、消费者 ACK 前崩溃、
+        发布器租约过期被重新领取），返回错误会让消费者无限重试，把正常重复变成雪崩。
+
+        **异内容必须返回 409 而不是 200。** 静默 ACK 会让数据损坏永远查不出来；
+        也不该是 400——请求格式本身正确，是服务端已有记录与它不一致。
+
+        **消费成功不代表 Agent 成功。** 200 只表示"这条通知已登记"，Agent 是否跑成功
+        由 `POST /internal/v1/work/claim` 与 Attempt 回执决定。
+      security:
+        - WorkerBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcceptNotificationRequest'
+      responses:
+        '200':
+          description: |
+            已登记（`ACCEPTED`）或此前已登记过同内容消息（`DUPLICATE`）。
+            两种情况都应 ACK。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AcceptNotificationResult' }
+        '400':
+          description: |
+            请求不合法：缺 `consumerName`/`event`（`VALIDATION_ERROR`），
+            或信封版本不受支持（`UNSUPPORTED_EVENT_VERSION`）。
+            两者都应进隔离队列，**不允许 requeue 重试**。
+          content:
+            application/json:
+              schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+        '401':
+          description: 缺少或无效的 Worker 凭证
+          content:
+            application/json:
+              schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+        '409':
+          description: |
+            同 `(consumerName, eventId)` 已有记录但 `payloadHash` 不同
+            （`RESOURCE_CONFLICT`）。这是数据损坏或上游 bug，必须停止重试并告警。
+          content:
+            application/json:
+              schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+
+components:
+  securitySchemes:
+    WorkerBearer:
+      type: http
+      scheme: bearer
+      description: |
+        Worker 专用凭证，鉴权与领取接口共用 `WorkerAuthFilter`（覆盖整个 `/internal/v1`）。
+        通知入口能唤醒消费者，必须与领取接口同等鉴权——未鉴权请求不得留下任何痕迹。
+
+  schemas:
+    EventEnvelope:
+      type: object
+      description: |
+        事件信封，结构由 `docs/contracts/event-envelope.schema.json` 冻结。
+        此处是面向接口的摘要视图，JSON Schema 是权威来源。
+      required:
+        - schemaVersion
+        - eventId
+        - eventType
+        - occurredAt
+        - aggregateType
+        - aggregateId
+        - correlationId
+        - payload
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+          description: |
+            信封版本。消费者只处理自己认识的范围，更高版本进隔离队列，
+            **不允许"尽力解析"**。
+        eventId:
+          allOf: [{ $ref: './openapi-common.yaml#/components/schemas/Ulid' }]
+          description: |
+            事件 ID，**等于 `outbox_events.id`**。人工重新投递保留同一个 event_id：
+            换 ID 会让同一条业务事实被当成两次通知，触发两次副作用。
+        eventType:
+          type: string
+          enum: [run.ready, evaluation.ready, run.finished, experiment.finished]
+        occurredAt: { type: string, format: date-time }
+        aggregateType:
+          type: string
+          enum: [RUN, EVALUATION_JOB, EXPERIMENT]
+        aggregateId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        correlationId:
+          allOf: [{ $ref: './openapi-common.yaml#/components/schemas/Ulid' }]
+          description: 贯穿一次实验的关联 ID，用于把执行、评测、报告串起来。
+        payload:
+          type: object
+          description: |
+            **只放 ID，不放正文。** 每个 `eventType` 的 payload 由 Schema 用 if/then
+            绑定必填字段（`run.ready`/`run.finished` → `runId`；
+            `evaluation.ready` → `jobId`；`experiment.finished` → `experimentId`），
+            且不允许额外字段。多塞一个字段就是破坏"通知不含正文"这条边界。
+          properties:
+            runId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+            jobId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+            experimentId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+          additionalProperties: false
+
+    AcceptNotificationRequest:
+      type: object
+      required: [consumerName, event]
+      properties:
+        consumerName:
+          type: string
+          minLength: 1
+          description: |
+            消费者名，与 `eventId` 一起构成 inbox 唯一键 `(consumer_name, event_id)`。
+            去重是**按消费者**的：`worker-run` 与 `worker-eval` 消费同一事件是两次正常投递。
+        event: { $ref: '#/components/schemas/EventEnvelope' }
+
+    AcceptNotificationResult:
+      type: object
+      required: [eventId, status, resourceId]
+      properties:
+        eventId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        status:
+          type: string
+          enum: [ACCEPTED, DUPLICATE]
+          description: |
+            `ACCEPTED` = 首次登记；`DUPLICATE` = 已处理过同内容消息。
+            两者都要 ACK。
+        resourceId:
+          type: [string, 'null']
+          description: 信封的 `aggregateId`，仅供日志与指标分组，消费者不应据此取数据。

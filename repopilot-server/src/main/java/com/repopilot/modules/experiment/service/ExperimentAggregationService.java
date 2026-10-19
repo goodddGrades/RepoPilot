@@ -1,5 +1,6 @@
 package com.repopilot.modules.experiment.service;
 
+import com.repopilot.common.reliability.service.OutboxWriter;
 import com.repopilot.common.state.ExperimentStatus;
 import com.repopilot.common.state.Transitions;
 import com.repopilot.modules.experiment.mapper.ExperimentMapper;
@@ -29,13 +30,32 @@ public class ExperimentAggregationService {
 
     private final ExperimentMapper experimentMapper;
     private final RunStore runStore;
+    private final OutboxWriter outbox;
     private final TransactionTemplate tx;
 
     public ExperimentAggregationService(ExperimentMapper experimentMapper, RunStore runStore,
+                                        OutboxWriter outbox,
                                         PlatformTransactionManager transactionManager) {
         this.experimentMapper = experimentMapper;
         this.runStore = runStore;
+        this.outbox = outbox;
         this.tx = new TransactionTemplate(transactionManager);
+    }
+
+    /**
+     * 记录「Run 进入终态」并尝试收敛实验。
+     *
+     * <p><b>为什么 Run 终态通知单独一个入口</b>：Run 有三条进入终态的路径
+     * （成功封口、失败重试耗尽、租约回收），而 {@link #aggregateIfSettled} 只在
+     * 整个实验收口时才触发。在三条路径各写一遍通知会漏掉其中一条，而漏掉的后果是
+     * 「前端看不到这个 Run 结束了」——这类问题只在特定失败路径出现，极难排查。
+     * 收在这里，一处不漏。
+     *
+     * <p>通知与状态写在同一事务：Run 终态回滚了，通知也一起消失。
+     */
+    public void onRunTerminal(String runId, String experimentId) {
+        tx.executeWithoutResult(status -> outbox.writeRunFinished(runId, experimentId));
+        aggregateIfSettled(experimentId);
     }
 
     /**
@@ -72,6 +92,8 @@ public class ExperimentAggregationService {
             Instant now = Instant.now();
             int updated = experimentMapper.updateStatus(experimentId, current, target, now, now);
             if (updated == 1) {
+                // 状态与通知同事务：这里回滚了通知也一起消失，不会出现"实验没结束却通知结束"
+                outbox.writeExperimentFinished(experimentId, experimentId);
                 log.info("实验 {} 聚合为 {}（完成 {} / 共 {}）", experimentId, target, completed, total);
             }
         });
