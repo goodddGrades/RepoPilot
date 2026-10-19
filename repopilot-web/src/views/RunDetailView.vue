@@ -4,7 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Refresh } from '@element-plus/icons-vue'
 
 import * as experimentApi from '@/api/experiments'
-import type { AttemptStatus, JobStatus, RunDetail, RunStatus } from '@/types/domain'
+import TracePanel from '@/components/TracePanel.vue'
+import type { AttemptStatus, JobStatus, RunDetail, RunMode, RunStatus } from '@/types/domain'
 import { formatTime, stringifyJson, toastError } from '@/utils/feedback'
 
 const route = useRoute()
@@ -63,6 +64,17 @@ const evaluationPending = computed(
 
 const outputText = computed(() => stringifyJson(detail.value?.output) || '（无输出正文）')
 const observationText = computed(() => stringifyJson(detail.value?.observationMetadata) || '（无）')
+
+const runMode = computed<RunMode>(() => (run.value?.mode as RunMode) ?? 'ONLINE')
+
+/** 轨迹完整度来自服务端派生元数据；缺失就按"未知"展示，不假定完整。 */
+const traceCoverage = computed(() => {
+  const meta = detail.value?.observationMetadata
+  if (meta && typeof meta === 'object' && 'traceCoverage' in meta) {
+    return String((meta as Record<string, unknown>).traceCoverage ?? '')
+  }
+  return ''
+})
 </script>
 
 <template>
@@ -156,6 +168,15 @@ const observationText = computed(() => stringifyJson(detail.value?.observationMe
         </template>
       </el-table>
     </el-card>
+
+    <TracePanel
+      v-if="run"
+      :run-id="runId"
+      :mode="runMode"
+      :attempts="attempts"
+      :accepted-attempt-id="run.acceptedAttemptId"
+      :trace-coverage="traceCoverage"
+    />
 
     <el-card class="page__card" shadow="never">
       <template #header>

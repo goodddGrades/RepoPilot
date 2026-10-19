@@ -1,5 +1,7 @@
 /** 把查询参数拼成 query string，跳过 undefined / null / 空字符串。 */
-export function buildQuery(params: Record<string, string | number | undefined | null>): string {
+export function buildQuery(
+  params: Record<string, string | number | boolean | undefined | null>,
+): string {
   const search = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => {
     if (value === undefined || value === null || value === '') {

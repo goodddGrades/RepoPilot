@@ -317,3 +317,35 @@ export interface ArtifactView {
   status: string
   createdAt: string
 }
+
+/** TASK-006：轨迹事件（在线与离线共用同一形状）。 */
+export interface TraceEventView {
+  eventId: string
+  /** 离线事件没有执行尝试，该字段缺省——不要在前端补成"unknown attempt" */
+  attemptId?: string
+  eventType: string
+  sequenceNo?: number
+  occurredAt: string
+  traceId?: string
+  spanId?: string
+  parentSpanId?: string
+  sourceEventId?: string
+  /** 只有确实归属本 Run 的附件才会返回；跨 Run 引用被置空 */
+  artifactId?: string
+  payload?: unknown
+}
+
+/** 本次查询实际使用的读取范围，用于向用户解释"为什么没有 Attempt 可选"。 */
+export interface TraceEventScope {
+  attemptId?: string
+  allAttempts: boolean
+  eventType?: string
+  resolvedFrom: 'REQUESTED' | 'ALL' | 'ACCEPTED' | 'ACTIVE' | 'NONE'
+}
+
+export interface TraceEventPage {
+  items: TraceEventView[]
+  nextCursor?: string
+  hasMore: boolean
+  scope: TraceEventScope
+}
