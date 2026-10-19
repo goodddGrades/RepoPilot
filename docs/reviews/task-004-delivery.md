@@ -210,7 +210,7 @@ SPRING_RABBITMQ_USERNAME=repopilot SPRING_RABBITMQ_PASSWORD=repopilot_dev_pwd \
 工作区状态：`git status --porcelain` 为空。
 
 **推送方式**：`git push origin develop`，实际为 fast-forward（推送前 `0 6`、无分叉），未使用 `--force`
-或任何强制参数。CI 由推送后的 GitHub Actions 独立验证，结论在交付说明与 `.workbuddy/memory` 中记录。
+或任何强制参数（`43919fe..9014e7a`）。推送后的 CI 结果见 §8。
 
 ### 6.1 敏感信息检查
 
@@ -236,3 +236,27 @@ SPRING_RABBITMQ_USERNAME=repopilot SPRING_RABBITMQ_PASSWORD=repopilot_dev_pwd \
 5. **TASK-007 前置**：`evaluation_jobs.input_hash` 已冻结为"run + attempt + planItem + config"的规范化摘要，
    Job 的 `PENDING → RUNNING` 领取、Attempt 与 `evaluation_results` 写入留给 007，届时不得改变 004 已写入的
    `accepted_attempt_id` 与 `sealed_at` 语义。
+
+## 8. CI 实跑结果（GitHub Actions）
+
+推送 `develop` 后由 `ci` workflow 验证（`push` 事件；未创建、未合并任何 PR）。
+
+| 项 | 值 |
+| --- | --- |
+| Run ID | **`39213525194`** |
+| Workflow / 事件 | `ci` / `push`（分支 `develop`） |
+| Commit | `9014e7a` |
+| 结论 | **success，5/5 Job 全绿** |
+| 用时 | 1 分 28 秒（07:03:14Z → 07:04:42Z） |
+| 链接 | https://github.com/goodddGrades/RepoPilot/actions/runs/39213525194 |
+
+| Job | 结果 | 实际数字 |
+| --- | --- | --- |
+| 后端（MySQL 8.0.36 + RabbitMQ） | success | 单元 **75**、集成 **106**，Failures 0 / Errors 0 / **Skipped 0** |
+| 后端（MySQL 8.0 + RabbitMQ） | success | 单元 **75**、集成 **106**，Failures 0 / Errors 0 / **Skipped 0** |
+| Web（构建） | success | `vue-tsc --noEmit && vite build`，`built in 6.29s` |
+| 设计字典自检 | success | 迁移与字典一致（生成器覆盖 V2–V7 共 6 个；V1 基线为手写，不在生成范围）、**76** 个 Java 文件一致 |
+| Worker（pytest） | success | **28 passed**，1 warning |
+
+CI 日志中 `Skipped: 1` 出现次数为 **0**，与本地零跳过运行一致；两条 MySQL 腿（8.0.36 与 8.0）数字完全相同，
+说明结论不依赖单一小版本。
