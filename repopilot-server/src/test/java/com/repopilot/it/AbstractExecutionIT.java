@@ -44,6 +44,10 @@ abstract class AbstractExecutionIT extends AbstractApiIT {
      */
     @BeforeEach
     void resetExecutionState() {
+        // TASK-005：导入回执外键指向 Run，必须在删 Run 之前清掉，
+        // 否则上一个用例留下的批次记录会让清理本身失败。
+        jdbc.update("DELETE FROM import_records");
+        jdbc.update("DELETE FROM import_errors");
         jdbc.update("UPDATE evaluation_runs SET active_attempt_id = NULL, accepted_attempt_id = NULL,"
                 + " output_artifact_id = NULL");
         jdbc.update("DELETE FROM annotation_records");
@@ -58,6 +62,8 @@ abstract class AbstractExecutionIT extends AbstractApiIT {
         // 只删除 Run 侧产物：导入用的 Artifact 没有 run_id，属于 TASK-003 的用例数据
         jdbc.update("DELETE FROM artifacts WHERE run_id IS NOT NULL");
         jdbc.update("DELETE FROM evaluation_runs");
+        // Run 删完，批次才没有引用者（evaluation_runs.import_batch_id 反向依赖这里）
+        jdbc.update("DELETE FROM import_batches");
     }
 
     /** 一次可用实验所需的已发布版本。 */

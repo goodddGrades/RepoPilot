@@ -37,6 +37,10 @@ repopilot:
     retry-backoff-first: 1s
     retry-backoff-second: 1s
     task-deadline: 5m
+  import:
+    # 用例显式调用 resume 驱动导入：异步自动处理会让"处理到一半"无法稳定构造
+    auto-process: false
+    resume-on-startup: false
 
 logging:
   level:
