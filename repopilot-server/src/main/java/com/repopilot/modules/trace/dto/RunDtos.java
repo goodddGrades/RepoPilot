@@ -126,7 +126,16 @@ public final class RunDtos {
                           String errorCode) {
     }
 
+    /**
+     * Run 详情。
+     *
+     * <p>{@code sourceSystem}/{@code sourceRecordId} 只为离线导入的 Run 有值：在线执行没有
+     * "来源记录"这回事。把它们放在顶层而不是 {@code run} 里，是因为列表视图不需要这两个字段，
+     * 而追溯单条离线轨迹时它们是第一手依据。
+     */
     public record RunDetail(RunView run,
+                            String sourceSystem,
+                            String sourceRecordId,
                             JsonNode output,
                             String outputArtifactId,
                             JsonNode usage,

@@ -143,4 +143,36 @@ public interface TraceEventMapper {
             </script>
             """)
     long countByRun(@Param("runId") String runId, @Param("attemptId") String attemptId);
+
+    /**
+     * 离线导入的事件批量写入。
+     *
+     * <p>与在线不同，这些事件没有 {@code run_attempt_id}：离线 Run 本来就没有执行尝试，
+     * 伪造一条 Attempt 只会让"这次执行真的跑过"变成谎言。
+     * 单行最多 500 条事件，按 500 分片即可，不需要更细的切分。
+     */
+    @Insert("""
+            <script>
+            INSERT INTO trace_events (id, event_id, run_id, run_attempt_id, source_event_id, event_hash, trace_id, span_id, parent_span_id, sequence_no, event_type, occurred_at, payload_json, artifact_id, created_at)
+            VALUES
+            <foreach collection="events" item="e" separator=",">
+                (#{e.id,typeHandler=com.repopilot.common.id.UlidTypeHandler},
+                 #{e.eventId,typeHandler=com.repopilot.common.id.UlidTypeHandler},
+                 #{e.runId,typeHandler=com.repopilot.common.id.UlidTypeHandler},
+                 #{e.runAttemptId,typeHandler=com.repopilot.common.id.UlidTypeHandler},
+                 #{e.sourceEventId},
+                 #{e.eventHash},
+                 #{e.traceId},
+                 #{e.spanId},
+                 #{e.parentSpanId},
+                 #{e.sequenceNo},
+                 #{e.eventType},
+                 #{e.occurredAt},
+                 #{e.payloadJson},
+                 #{e.artifactId,typeHandler=com.repopilot.common.id.UlidTypeHandler},
+                 #{e.createdAt})
+            </foreach>
+            </script>
+            """)
+    int batchInsert(@Param("events") List<TraceEvent> events);
 }

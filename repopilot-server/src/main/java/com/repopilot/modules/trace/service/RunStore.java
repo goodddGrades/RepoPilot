@@ -232,4 +232,35 @@ public class RunStore {
     public void insertArtifact(Artifact artifact) {
         artifactMapper.insert(artifact);
     }
+
+    // ---- TASK-005：离线导入 ----
+
+    public Optional<EvaluationRun> findBySourceIdentity(String experimentId, String targetId,
+                                                       String sourceSystem, String sourceRecordId) {
+        return runMapper.findBySourceIdentity(experimentId, targetId, sourceSystem, sourceRecordId);
+    }
+
+    public Optional<EvaluationRun> findBySlot(String targetId, String caseId, int repeatIndex) {
+        return runMapper.findBySlot(targetId, caseId, repeatIndex);
+    }
+
+    public List<EvaluationRun> listByExperiment(String experimentId) {
+        return runMapper.listByExperiment(experimentId);
+    }
+
+    public int markEvaluating(String runId, Instant now) {
+        return runMapper.markEvaluating(runId, now);
+    }
+
+    public void insertRun(EvaluationRun run) {
+        runMapper.insert(run);
+    }
+
+    /** 离线事件批量写入：按 500 分片，避免多值 INSERT 超过占位符上限。 */
+    public void insertEvents(List<TraceEvent> events) {
+        for (int from = 0; from < events.size(); from += CHUNK_SIZE) {
+            int to = Math.min(from + CHUNK_SIZE, events.size());
+            eventMapper.batchInsert(events.subList(from, to));
+        }
+    }
 }

@@ -156,15 +156,29 @@ public class ExperimentService {
                 throw BusinessException.field(prefix + ".repeatCount",
                         "repeatCount 必须在 1~" + MAX_REPEAT + " 之间");
             }
-            String agentVersionId = requireUlid(prefix + ".agentVersionId", target.agentVersionId());
-            AgentVersion version = agentVersionService.requireVersion(agentVersionId);
-            if (version.getStatus() == VersionStatus.ARCHIVED) {
-                throw BusinessException.field(prefix + ".agentVersionId",
-                        "已归档的 AgentVersion 不能用于新实验");
-            }
-            if (!runnerRegistry.isRegistered(version.getRunnerType())) {
-                throw BusinessException.field(prefix + ".agentVersionId",
-                        "Runner 未注册（V1 仅支持 MOCK）: " + version.getRunnerType());
+            String agentVersionId = optionalUlid(prefix + ".agentVersionId", target.agentVersionId());
+            if (mode == RunMode.ONLINE) {
+                if (agentVersionId == null) {
+                    throw BusinessException.field(prefix + ".agentVersionId",
+                            "在线 Target 必须提供已发布的 AgentVersion");
+                }
+                AgentVersion version = agentVersionService.requireVersion(agentVersionId);
+                if (version.getStatus() == VersionStatus.ARCHIVED) {
+                    throw BusinessException.field(prefix + ".agentVersionId",
+                            "已归档的 AgentVersion 不能用于新实验");
+                }
+                if (!runnerRegistry.isRegistered(version.getRunnerType())) {
+                    throw BusinessException.field(prefix + ".agentVersionId",
+                            "Runner 未注册（V1 仅支持 MOCK）: " + version.getRunnerType());
+                }
+            } else if (agentVersionId != null) {
+                // 离线 Run 不经过 Runner 执行：只校验版本存在且未归档，不做能力校验。
+                // 允许关联版本是为了让报告能显示"这批历史记录来自哪个对象配置"，而不是强制留空。
+                AgentVersion version = agentVersionService.requireVersion(agentVersionId);
+                if (version.getStatus() == VersionStatus.ARCHIVED) {
+                    throw BusinessException.field(prefix + ".agentVersionId",
+                            "已归档的 AgentVersion 不能用于新实验");
+                }
             }
 
             ExperimentTarget entity = new ExperimentTarget();
@@ -219,7 +233,23 @@ public class ExperimentService {
 
     public ExperimentDtos.ExperimentView get(String id) {
         Experiment experiment = requireExperiment(id);
-        return ExperimentDtos.ExperimentView.from(experiment, targetMapper.listByExperiment(id));
+        List<ExperimentTarget> targets = targetMapper.listByExperiment(id);
+        // 离线实验在启动前需要"已导入 vs 缺失槽位"，在线实验没有这个概念（槽位在启动时一次生成）
+        long imported = -1L;
+        Long expected = experiment.getExpectedRunCount();
+        if (experiment.getMode() == RunMode.OFFLINE) {
+            imported = runStore.countByExperiment(id);
+            // 离线实验的完整槽位数 = 已发布样本 × repeatCount。启动时 expected_run_count 写的
+            // 就是同一个数，所以这里用它不会和冻结值漂移；而 DRAFT 阶段该列还是 0，
+            // 只有按样本数实时算，详情页才能回答"还差多少条轨迹"。
+            long cases = datasetVersionService.listCases(experiment.getDatasetVersionId()).size();
+            long slots = 0L;
+            for (ExperimentTarget target : targets) {
+                slots += cases * (target.getRepeatCount() == null ? 0 : target.getRepeatCount());
+            }
+            expected = slots;
+        }
+        return ExperimentDtos.ExperimentView.from(experiment, targets, imported, expected);
     }
 
     public PageResponse<ExperimentDtos.ExperimentView> list(Integer page, Integer pageSize,
@@ -263,10 +293,6 @@ public class ExperimentService {
                         throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
                                 "只有 DRAFT 实验可以开始（当前 " + experiment.getStatus() + "）");
                     }
-                    if (experiment.getMode() != RunMode.ONLINE) {
-                        throw BusinessException.field("mode",
-                                "TASK-004 只支持 ONLINE 实验；OFFLINE 导入在 TASK-005 实现");
-                    }
 
                     DatasetVersion datasetVersion = datasetVersionService
                             .requireVersion(experiment.getDatasetVersionId());
@@ -295,63 +321,145 @@ public class ExperimentService {
                         throw BusinessException.field("targets", "实验没有 Target，不能开始");
                     }
 
-                    long totalRuns = 0;
-                    for (int i = 0; i < targets.size(); i++) {
-                        ExperimentTarget target = targets.get(i);
-                        String prefix = "targets[" + i + "]";
-                        AgentVersion agentVersion = agentVersionService
-                                .requireVersion(target.getAgentVersionId());
-                        if (agentVersion.getStatus() != VersionStatus.PUBLISHED) {
-                            throw BusinessException.field(prefix + ".agentVersionId",
-                                    "AgentVersion 必须已发布（当前 " + agentVersion.getStatus() + "）");
-                        }
-                        if (!runnerRegistry.isRegistered(agentVersion.getRunnerType())) {
-                            throw BusinessException.field(prefix + ".agentVersionId",
-                                    "Runner 未注册（V1 仅支持 MOCK）: " + agentVersion.getRunnerType());
-                        }
-                        for (DatasetCase datasetCase : cases) {
-                            com.repopilot.common.registry.TaskType taskType =
-                                    com.repopilot.common.registry.TaskType.require(datasetCase.getTaskType());
-                            if (!runnerRegistry.supports(agentVersion.getRunnerType(), taskType)) {
-                                throw BusinessException.field("datasetVersionId",
-                                        "样本 " + datasetCase.getCaseKey() + " 的 taskType "
-                                                + datasetCase.getTaskType() + " 不被 Runner "
-                                                + agentVersion.getRunnerType() + " 支持");
-                            }
-                        }
-                        totalRuns += (long) cases.size() * target.getRepeatCount();
-                    }
-                    if (totalRuns > MAX_RUNS) {
-                        throw BusinessException.field("targets",
-                                "Run 总数 " + totalRuns + " 超过上限 " + MAX_RUNS);
-                    }
-
                     Instant now = Instant.now();
-                    if (experimentMapper.markQueued(id, totalRuns, now, now) != 1) {
-                        throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
-                                "实验状态已变化，无法开始: " + id);
-                    }
-
-                    List<EvaluationRun> runs = new ArrayList<>((int) totalRuns);
-                    for (ExperimentTarget target : targets) {
-                        for (DatasetCase datasetCase : cases) {
-                            for (int repeat = 1; repeat <= target.getRepeatCount(); repeat++) {
-                                runs.add(newRun(experiment, target, datasetCase, repeat, now));
-                            }
-                        }
-                    }
-                    runStore.insertSlots(runs);
-
-                    EvaluationBatch batch = batchService.createInitial(id, planVersion.getId(),
-                            totalRuns, totalRuns * items.size(), SYSTEM_ACTOR, now);
-                    batchService.registerRuns(batch.getId(), id,
-                            runs.stream().map(EvaluationRun::getId).toList(), now);
-
-                    ExperimentDtos.StatusResult result =
-                            new ExperimentDtos.StatusResult(id, ExperimentStatus.QUEUED.name());
-                    idempotency.record(scope, idemKey, hash, "experiment", id, 202, result);
-                    return new IdempotentResult<>(result, 202, false);
+                    return experiment.getMode() == RunMode.OFFLINE
+                            ? startOffline(experiment, targets, cases, planVersion, items,
+                                    scope, idemKey, hash, now)
+                            : startOnline(experiment, targets, cases, planVersion, items,
+                                    scope, idemKey, hash, now);
                 }));
+    }
+
+    /** 在线：一次性生成全部 Run 槽位，再建 INITIAL 批次与 Job。 */
+    private IdempotentResult<ExperimentDtos.StatusResult> startOnline(
+            Experiment experiment, List<ExperimentTarget> targets, List<DatasetCase> cases,
+            EvaluationPlanVersion planVersion, List<EvaluationPlanItem> items,
+            String scope, String idemKey, String hash, Instant now) {
+        long totalRuns = 0;
+        for (int i = 0; i < targets.size(); i++) {
+            ExperimentTarget target = targets.get(i);
+            String prefix = "targets[" + i + "]";
+            AgentVersion agentVersion = agentVersionService.requireVersion(target.getAgentVersionId());
+            if (agentVersion.getStatus() != VersionStatus.PUBLISHED) {
+                throw BusinessException.field(prefix + ".agentVersionId",
+                        "AgentVersion 必须已发布（当前 " + agentVersion.getStatus() + "）");
+            }
+            if (!runnerRegistry.isRegistered(agentVersion.getRunnerType())) {
+                throw BusinessException.field(prefix + ".agentVersionId",
+                        "Runner 未注册（V1 仅支持 MOCK）: " + agentVersion.getRunnerType());
+            }
+            for (DatasetCase datasetCase : cases) {
+                com.repopilot.common.registry.TaskType taskType =
+                        com.repopilot.common.registry.TaskType.require(datasetCase.getTaskType());
+                if (!runnerRegistry.supports(agentVersion.getRunnerType(), taskType)) {
+                    throw BusinessException.field("datasetVersionId",
+                            "样本 " + datasetCase.getCaseKey() + " 的 taskType "
+                                    + datasetCase.getTaskType() + " 不被 Runner "
+                                    + agentVersion.getRunnerType() + " 支持");
+                }
+            }
+            totalRuns += (long) cases.size() * target.getRepeatCount();
+        }
+        if (totalRuns > MAX_RUNS) {
+            throw BusinessException.field("targets",
+                    "Run 总数 " + totalRuns + " 超过上限 " + MAX_RUNS);
+        }
+
+        String id = experiment.getId();
+        if (experimentMapper.markQueued(id, totalRuns, now, now) != 1) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "实验状态已变化，无法开始: " + id);
+        }
+
+        List<EvaluationRun> runs = new ArrayList<>((int) totalRuns);
+        for (ExperimentTarget target : targets) {
+            for (DatasetCase datasetCase : cases) {
+                for (int repeat = 1; repeat <= target.getRepeatCount(); repeat++) {
+                    runs.add(newRun(experiment, target, datasetCase, repeat, now));
+                }
+            }
+        }
+        runStore.insertSlots(runs);
+
+        EvaluationBatch batch = batchService.createInitial(id, planVersion.getId(),
+                totalRuns, totalRuns * items.size(), SYSTEM_ACTOR, now);
+        batchService.registerRuns(batch.getId(), id,
+                runs.stream().map(EvaluationRun::getId).toList(), now);
+
+        ExperimentDtos.StatusResult result =
+                new ExperimentDtos.StatusResult(id, ExperimentStatus.QUEUED.name());
+        idempotency.record(scope, idemKey, hash, "experiment", id, 202, result);
+        return new IdempotentResult<>(result, 202, false);
+    }
+
+    /**
+     * 离线：冻结"已经导入的 Run"，不生成槽位、不创建虚假 Attempt。
+     *
+     * <p>与在线的关键差异：
+     * <ul>
+     *   <li>{@code expected_run_count} 仍是完整槽位数（样本 × repeat），因此缺失量可被报告；</li>
+     *   <li>实际进入批次的是已导入且已封口的 Run，缺失槽位只记录不补造；</li>
+     *   <li>Run 直接 {@code PENDING→EVALUATING}，跳过 QUEUED/RUNNING——没有执行发生；</li>
+     *   <li>每条 Run 立刻生成 PENDING Job，{@code accepted_attempt_id} 保持 null。</li>
+     * </ul>
+     */
+    private IdempotentResult<ExperimentDtos.StatusResult> startOffline(
+            Experiment experiment, List<ExperimentTarget> targets, List<DatasetCase> cases,
+            EvaluationPlanVersion planVersion, List<EvaluationPlanItem> items,
+            String scope, String idemKey, String hash, Instant now) {
+        String id = experiment.getId();
+        List<EvaluationRun> runs = runStore.listByExperiment(id).stream()
+                .filter(run -> run.getMode() == RunMode.OFFLINE)
+                .toList();
+        if (runs.isEmpty()) {
+            throw BusinessException.field("imports",
+                    "离线实验没有任何已导入的 Run，不能开始（先导入 OFFLINE_RUNS）");
+        }
+        for (EvaluationRun run : runs) {
+            if (run.getSealedAt() == null) {
+                throw BusinessException.field("imports",
+                        "存在未封口的导入记录，不能开始: run=" + run.getId());
+            }
+            if (run.getStatus() != RunStatus.PENDING) {
+                throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                        "离线 Run 状态不是 PENDING，无法开始: " + run.getId());
+            }
+        }
+
+        long expectedSlots = 0;
+        for (ExperimentTarget target : targets) {
+            expectedSlots += (long) cases.size() * target.getRepeatCount();
+        }
+        if (expectedSlots > MAX_RUNS) {
+            throw BusinessException.field("targets",
+                    "Run 槽位总数 " + expectedSlots + " 超过上限 " + MAX_RUNS);
+        }
+
+        if (experimentMapper.markQueued(id, expectedSlots, now, now) != 1) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "实验状态已变化，无法开始: " + id);
+        }
+
+        for (EvaluationRun run : runs) {
+            if (runStore.markEvaluating(run.getId(), now) != 1) {
+                throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                        "离线 Run 状态已变化，无法进入评测: " + run.getId());
+            }
+        }
+
+        EvaluationBatch batch = batchService.createInitial(id, planVersion.getId(),
+                runs.size(), (long) runs.size() * items.size(), SYSTEM_ACTOR, now);
+        batchService.registerRuns(batch.getId(), id,
+                runs.stream().map(EvaluationRun::getId).toList(), now);
+        for (EvaluationRun run : runs) {
+            // 离线没有 accepted Attempt：评测输入取自 Run 自身的封口数据
+            jobService.createPendingJobs(run.getId(), batch.getId(), planVersion.getId(), null);
+        }
+
+        ExperimentDtos.StatusResult result =
+                new ExperimentDtos.StatusResult(id, ExperimentStatus.QUEUED.name());
+        idempotency.record(scope, idemKey, hash, "experiment", id, 202, result);
+        return new IdempotentResult<>(result, 202, false);
     }
 
     /**
@@ -441,6 +549,18 @@ public class ExperimentService {
     private static String requireUlid(String field, String value) {
         if (value == null || value.isBlank()) {
             throw BusinessException.field(field, field + " 不能为空");
+        }
+        String trimmed = value.trim();
+        if (!Ulid.isValid(trimmed)) {
+            throw BusinessException.field(field, field + " 必须是 26 位 ULID");
+        }
+        return trimmed;
+    }
+
+    /** 可空 ULID：空值与无效值区分对待，避免"没填"和"填错"合并成同一条错误。 */
+    private static String optionalUlid(String field, String value) {
+        if (value == null || value.isBlank()) {
+            return null;
         }
         String trimmed = value.trim();
         if (!Ulid.isValid(trimmed)) {

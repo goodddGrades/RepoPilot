@@ -80,7 +80,9 @@ public class RunQueryService {
         // 默认看 accepted Attempt；执行中则看当前 active Attempt（与 TASK-006 的默认读取口径一致）
         String eventAttemptId = run.getAcceptedAttemptId() != null
                 ? run.getAcceptedAttemptId() : run.getActiveAttemptId();
-        return new RunDtos.RunDetail(RunDtos.RunView.from(row), run.getOutputJson(),
+        return new RunDtos.RunDetail(RunDtos.RunView.from(row),
+                run.getSourceSystem(), run.getSourceRecordId(),
+                run.getOutputJson(),
                 run.getOutputArtifactId(), run.getUsageJson(), run.getObservationMetadataJson(),
                 runStore.countEventsOfRun(runId, eventAttemptId),
                 attempts, summarize(jobs), jobViews);

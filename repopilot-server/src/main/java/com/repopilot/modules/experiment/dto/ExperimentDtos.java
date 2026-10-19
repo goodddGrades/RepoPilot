@@ -56,6 +56,8 @@ public final class ExperimentDtos {
                                  String evaluationPlanVersionId,
                                  JsonNode config,
                                  long expectedRunCount,
+                                 long importedRunCount,
+                                 long missingRunCount,
                                  List<TargetView> targets,
                                  Instant startedAt,
                                  Instant finishedAt,
@@ -63,10 +65,33 @@ public final class ExperimentDtos {
                                  Instant updatedAt) {
 
         public static ExperimentView from(Experiment entity, List<ExperimentTarget> targets) {
+            return from(entity, targets, -1L);
+        }
+
+        /**
+         * @param importedRunCount 已导入的 Run 数；传 {@code -1} 表示"未计算"（列表页不逐行统计）
+         */
+        public static ExperimentView from(Experiment entity, List<ExperimentTarget> targets,
+                                          long importedRunCount) {
+            return from(entity, targets, importedRunCount, entity.getExpectedRunCount());
+        }
+
+        /**
+         * @param expectedRunCount 完整槽位数。离线实验由调用方按"已发布样本 × repeatCount"算出
+         *                         （DRAFT 阶段 {@code expected_run_count} 还是 0），这样详情页在
+         *                         导入过程中就能回答"还差多少条轨迹"；在线实验直接传实体值。
+         */
+        public static ExperimentView from(Experiment entity, List<ExperimentTarget> targets,
+                                          long importedRunCount, Long expectedRunCount) {
+            long expected = expectedRunCount == null ? 0L : expectedRunCount;
+            boolean computed = importedRunCount >= 0;
+            long missing = computed && expected > importedRunCount ? expected - importedRunCount : 0L;
             return new ExperimentView(entity.getId(), entity.getName(), entity.getDescription(),
                     entity.getMode(), entity.getStatus(), entity.getDatasetVersionId(),
                     entity.getEvaluationPlanVersionId(), entity.getConfigJson(),
-                    entity.getExpectedRunCount() == null ? 0L : entity.getExpectedRunCount(),
+                    expected,
+                    computed ? importedRunCount : 0L,
+                    missing,
                     targets.stream().map(TargetView::from).toList(),
                     entity.getStartedAt(), entity.getFinishedAt(),
                     entity.getCreatedAt(), entity.getUpdatedAt());

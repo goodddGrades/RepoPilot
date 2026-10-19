@@ -234,6 +234,7 @@ public interface EvaluationRunMapper {
                SET r.status = 'QUEUED',
                    r.updated_at = #{updatedAt}
              WHERE r.status = 'PENDING'
+               AND r.mode = 'ONLINE'
                AND e.status IN ('QUEUED', 'RUNNING')
             """)
     int promotePending(@Param("updatedAt") Instant updatedAt);
@@ -433,4 +434,140 @@ public interface EvaluationRunMapper {
                @Param("caseKey") String caseKey,
                @Param("status") RunStatus status,
                @Param("taskOutcome") TaskOutcome taskOutcome);
+
+    // ---- TASK-005：离线导入的幂等查找与离线启动 ----
+
+    /**
+     * 同一来源身份的历史 Run。
+     *
+     * <p>身份是 {@code (experiment, target, sourceSystem, sourceRecordId)}，由数据库唯一键兜底。
+     * 再导入同一条记录时用它判断"同正文复用"还是"异正文冲突"。
+     */
+    @Select("""
+            SELECT id,
+                   experiment_id,
+                   experiment_target_id,
+                   dataset_case_id,
+                   repeat_index,
+                   import_batch_id,
+                   mode,
+                   status,
+                   task_outcome,
+                   source_system,
+                   source_record_id,
+                   source_record_hash,
+                   trace_id,
+                   external_trace_ref,
+                   output_json,
+                   output_artifact_id,
+                   usage_json,
+                   observation_metadata_json,
+                   attempt_count,
+                   active_attempt_id,
+                   accepted_attempt_id,
+                   next_retry_at,
+                   sealed_at,
+                   started_at,
+                   finished_at,
+                   created_at,
+                   updated_at
+              FROM evaluation_runs
+             WHERE experiment_id = #{experimentId}
+               AND experiment_target_id = #{targetId}
+               AND source_system = #{sourceSystem}
+               AND source_record_id = #{sourceRecordId}
+            """)
+    Optional<EvaluationRun> findBySourceIdentity(@Param("experimentId") String experimentId,
+                                                 @Param("targetId") String targetId,
+                                                 @Param("sourceSystem") String sourceSystem,
+                                                 @Param("sourceRecordId") String sourceRecordId);
+
+    /** 槽位占用者：同一 Target 下 (case, repeat) 只允许一条 Run。 */
+    @Select("""
+            SELECT id,
+                   experiment_id,
+                   experiment_target_id,
+                   dataset_case_id,
+                   repeat_index,
+                   import_batch_id,
+                   mode,
+                   status,
+                   task_outcome,
+                   source_system,
+                   source_record_id,
+                   source_record_hash,
+                   trace_id,
+                   external_trace_ref,
+                   output_json,
+                   output_artifact_id,
+                   usage_json,
+                   observation_metadata_json,
+                   attempt_count,
+                   active_attempt_id,
+                   accepted_attempt_id,
+                   next_retry_at,
+                   sealed_at,
+                   started_at,
+                   finished_at,
+                   created_at,
+                   updated_at
+              FROM evaluation_runs
+             WHERE experiment_target_id = #{targetId}
+               AND dataset_case_id = #{caseId}
+               AND repeat_index = #{repeatIndex}
+            """)
+    Optional<EvaluationRun> findBySlot(@Param("targetId") String targetId,
+                                       @Param("caseId") String caseId,
+                                       @Param("repeatIndex") int repeatIndex);
+
+    /** 实验内全部离线 Run（按创建顺序），启动时冻结批次清单。 */
+    @Select("""
+            SELECT id,
+                   experiment_id,
+                   experiment_target_id,
+                   dataset_case_id,
+                   repeat_index,
+                   import_batch_id,
+                   mode,
+                   status,
+                   task_outcome,
+                   source_system,
+                   source_record_id,
+                   source_record_hash,
+                   trace_id,
+                   external_trace_ref,
+                   output_json,
+                   output_artifact_id,
+                   usage_json,
+                   observation_metadata_json,
+                   attempt_count,
+                   active_attempt_id,
+                   accepted_attempt_id,
+                   next_retry_at,
+                   sealed_at,
+                   started_at,
+                   finished_at,
+                   created_at,
+                   updated_at
+              FROM evaluation_runs
+             WHERE experiment_id = #{experimentId}
+             ORDER BY created_at ASC, id ASC
+            """)
+    List<EvaluationRun> listByExperiment(@Param("experimentId") String experimentId);
+
+    /**
+     * 离线 Run 进入评测：PENDING→EVALUATING。
+     *
+     * <p>条件更新带旧状态：并发启动或已被取消时影响行数为 0，调用方据此回滚整个事务，
+     * 不留下"实验已 QUEUED、Run 仍在 PENDING"的半截状态。
+     */
+    @Update("""
+            UPDATE evaluation_runs
+               SET status = 'EVALUATING',
+                   updated_at = #{updatedAt}
+             WHERE id = #{id}
+               AND status = 'PENDING'
+               AND mode = 'OFFLINE'
+            """)
+    int markEvaluating(@Param("id") String id, @Param("updatedAt") Instant updatedAt);
 }

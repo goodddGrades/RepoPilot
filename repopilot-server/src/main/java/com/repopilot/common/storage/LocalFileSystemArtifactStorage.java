@@ -93,6 +93,24 @@ public class LocalFileSystemArtifactStorage implements ArtifactStorage {
         return Files.exists(resolveInsideRoot(objectKey));
     }
 
+    @Override
+    public byte[] get(String objectKey) {
+        Path path = resolveInsideRoot(objectKey);
+        try {
+            if (!Files.isRegularFile(path)) {
+                throw new StorageException("对象不存在: " + objectKey);
+            }
+            long size = Files.size(path);
+            if (size > maxBytes) {
+                // 存储层上限之外的巨大对象不应被读进内存；这通常意味着对象键被替换过
+                throw new StorageException("对象超过读取上限 " + maxBytes + " 字节: " + objectKey);
+            }
+            return Files.readAllBytes(path);
+        } catch (IOException ex) {
+            throw new StorageException("读取对象失败: " + objectKey, ex);
+        }
+    }
+
     /** 根目录绝对路径，供运维排查与测试断言（不参与业务逻辑）。 */
     public Path root() {
         return root;

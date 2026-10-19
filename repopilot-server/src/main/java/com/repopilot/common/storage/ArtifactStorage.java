@@ -32,6 +32,17 @@ public interface ArtifactStorage {
     boolean exists(String objectKey);
 
     /**
+     * 读取对象全部字节。
+     *
+     * <p>TASK-005 新增：导入需要重新读取已上传的原始文件，而不是让前端再传一遍。
+     * 读取失败抛 {@link StorageException}；调用方据此返回"原文件不可读"，
+     * 不能把空内容当作合法文件继续解析。
+     *
+     * @throws StorageException 对象不存在或不可读
+     */
+    byte[] get(String objectKey);
+
+    /**
      * 一次写入的结果。
      *
      * @param objectKey  服务端生成的相对键
