@@ -263,4 +263,34 @@ public class RunStore {
             eventMapper.batchInsert(events.subList(from, to));
         }
     }
+
+    // ---- TASK-006：轨迹回放 ----
+
+    /**
+     * 键集分页取一页事件。
+     *
+     * @param afterAt 上一页最后一条的 {@code occurredAt}；null 表示第一页
+     * @param afterId 上一页最后一条的数据库行 id，仅与 {@code afterAt} 一起使用
+     */
+    public List<TraceEvent> eventPage(String runId, String attemptId, String eventType,
+                                      Instant afterAt, String afterId, int limit) {
+        // 绑定成 UTC 墙钟（LocalDateTime）而不是 Timestamp：见 TraceEventMapper#listPage 的说明，
+        // 同一个值换一种绑定方式，优化器就会从 range 退化回 run_id 的 ref 扫描。
+        java.time.LocalDateTime bound = afterAt == null
+                ? null : java.time.LocalDateTime.ofInstant(afterAt, java.time.ZoneOffset.UTC);
+        return eventMapper.listPage(runId, attemptId, eventType, bound, afterId, limit);
+    }
+
+    /** 事件引用的 Artifact 中，确实归属该 Run 的那部分 id。 */
+    public java.util.Set<String> artifactIdsOwnedByRun(String runId, List<String> ids) {
+        if (ids.isEmpty()) {
+            return java.util.Set.of();
+        }
+        return java.util.Set.copyOf(artifactMapper.findIdsOwnedByRun(runId, ids));
+    }
+
+    /** 清理孤儿对象时用来算差集。 */
+    public List<String> allArtifactObjectKeys() {
+        return artifactMapper.listObjectKeys();
+    }
 }

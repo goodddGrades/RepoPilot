@@ -2,6 +2,7 @@ package com.repopilot.modules.trace.service;
 
 import com.repopilot.common.api.ErrorCode;
 import com.repopilot.common.exception.BusinessException;
+import com.repopilot.common.hash.Sha256;
 import com.repopilot.common.id.Ulid;
 import com.repopilot.common.state.ArtifactStatus;
 import com.repopilot.common.storage.ArtifactStorage;
@@ -112,6 +113,15 @@ public class ArtifactService {
         }
         try {
             byte[] content = storage.get(artifact.getObjectKey());
+            // 大小与摘要双重校验：对象被替换/截断时宁可报错，也不能把错误内容当证据交出去。
+            // 不把 objectKey 写进响应，也不在 message 里拼接存储路径。
+            if (content.length != artifact.getSizeBytes()
+                    || !Sha256.ofBytes(content).equals(artifact.getSha256())) {
+                log.error("Artifact 内容与元数据不一致: id={}, 期望 {} 字节, 实际 {} 字节",
+                        id, artifact.getSizeBytes(), content.length);
+                throw new BusinessException(ErrorCode.RESOURCE_CONFLICT,
+                        "附件内容与登记信息不一致，拒绝下载");
+            }
             return new ArtifactDtos.Download(artifact.getContentType(), content, artifact.getSha256());
         } catch (StorageException ex) {
             log.error("Artifact 读取失败: id={}", id, ex);

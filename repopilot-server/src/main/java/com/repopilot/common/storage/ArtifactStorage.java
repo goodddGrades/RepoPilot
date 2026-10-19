@@ -43,6 +43,15 @@ public interface ArtifactStorage {
     byte[] get(String objectKey);
 
     /**
+     * 列出根目录下的全部对象。
+     *
+     * <p>TASK-006 新增：清理"写了对象但没有元数据"的孤儿文件时，需要把存储实际内容
+     * 与 {@code artifacts.object_key} 做差集。写入中的 {@code .tmp} 临时文件不出现，
+     * 它们由 {@link #put} 自己清理。
+     */
+    java.util.List<StoredEntry> list();
+
+    /**
      * 一次写入的结果。
      *
      * @param objectKey  服务端生成的相对键
@@ -51,5 +60,15 @@ public interface ArtifactStorage {
      * @param sha256     内容摘要（小写 64 位）
      */
     record StoredObject(String objectKey, String provider, long sizeBytes, String sha256) {
+    }
+
+    /**
+     * 存储里的既有对象（清理用）。
+     *
+     * @param objectKey   相对键
+     * @param sizeBytes   字节数
+     * @param lastModified 最后修改时间；宽限期以它为准，避免删掉"正在写但元数据还没提交"的对象
+     */
+    record StoredEntry(String objectKey, long sizeBytes, java.time.Instant lastModified) {
     }
 }

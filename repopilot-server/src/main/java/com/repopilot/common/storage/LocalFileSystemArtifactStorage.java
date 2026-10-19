@@ -11,6 +11,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.stream.Stream;
 
 /**
  * 本地文件系统实现：把上传内容写到配置的根目录下。
@@ -114,6 +116,34 @@ public class LocalFileSystemArtifactStorage implements ArtifactStorage {
     /** 根目录绝对路径，供运维排查与测试断言（不参与业务逻辑）。 */
     public Path root() {
         return root;
+    }
+
+    /**
+     * 列出根目录下的正式对象。
+     *
+     * <p>跳过以 {@code .} 开头的文件（写入中的 {@code .xxx.tmp}）：
+     * 它们可能正被 {@link #put} 写完就改名，提前列出来会被清理器误删。
+     * 对象键统一用 {@code /} 分隔，避免 Windows 下写出反斜杠导致与元数据比对不上。
+     */
+    @Override
+    public List<StoredEntry> list() {
+        try (Stream<Path> walk = Files.walk(root)) {
+            return walk.filter(Files::isRegularFile)
+                    .filter(path -> !path.getFileName().toString().startsWith("."))
+                    .map(this::entryOf)
+                    .toList();
+        } catch (IOException ex) {
+            throw new StorageException("列举对象失败", ex);
+        }
+    }
+
+    private StoredEntry entryOf(Path path) {
+        try {
+            return new StoredEntry(root.relativize(path).toString().replace('\\', '/'),
+                    Files.size(path), Files.getLastModifiedTime(path).toInstant());
+        } catch (IOException ex) {
+            throw new StorageException("读取对象属性失败", ex);
+        }
     }
 
     private Path resolveInsideRoot(String objectKey) {

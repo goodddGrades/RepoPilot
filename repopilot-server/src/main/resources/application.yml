@@ -89,6 +89,17 @@ repopilot:
       # 换到别处时同样要确认不在 Git 工作区内。
       root: ${STORAGE_LOCAL_ROOT:var/storage}
       max-bytes: 67108864
+  trace:
+    # 游标签名密钥。留空时进程用一次性随机密钥：重启后旧游标返回 400（前端回到第一页），
+    # 这样不会在仓库里留一个"所有部署共用"的默认密钥。
+    cursor-secret: ${REPOPILOT_CURSOR_SECRET:}
+  artifact:
+    cleanup:
+      # 只清理"有对象、无元数据"且超过宽限期的文件；有元数据的证据永不删除
+      enabled: true
+      grace-seconds: 86400
+      interval-ms: 3600000
+      initial-delay-ms: 600000
   worker:
     # 留空 => /internal/v1 一律 401（fail closed）。本机运行时从 .env 注入。
     token: ${REPOPILOT_WORKER_TOKEN:}
