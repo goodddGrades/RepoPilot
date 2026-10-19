@@ -12,7 +12,7 @@ Run 与批次按状态机收口，前端读到的就是库里那一份。重评�
 | 新增后端代码 | 6 个服务类 + 4 个 DTO + 1 个控制器 + 8 个 Mapper 追加方法 + `WorkerCapabilities`（共 11 个新文件） |
 | 新增 Worker 代码 | `app/evaluator/{base,rules,trace,registry}.py` 四个规则算子；`poller.py` 分派评测任务；`runtime.py` 支持纯评测 Worker |
 | 新增测试 | `EvaluationEngineIT` **17 条**真实 MySQL 集成用例；Worker 新增 **64 条**算子与分派用例 |
-| 后端全量 | 单元 **75**、集成 **153**（含新增 17），0 失败 0 跳过 |
+| 后端全量 | 单元 **75**、集成 **153**（含新增 17），0 失败 0 跳过（CI 两条 MySQL 腿各跑一遍） |
 | 前端 | `vue-tsc --noEmit` 通过；`vite build` 通过；Run 详情页新增判定/分数/证据/Attempt 历史，实验详情页新增批次卡片与重评入口 |
 | Worker / 设计字典 | pytest **92 passed**；字典生成物 76 Java 文件 / 28 Mapper 一致；DDL 6 迁移一致；`verify_design.py` PASS（1260 项） |
 | 端到端演示 | `tools/demo-task-007.sh` 11 步（详见 §7） |
@@ -159,10 +159,50 @@ Run 只在 INITIAL 批次全部 Job 终态后 EVALUATING→COMPLETED/FAILED；**
 
 `tools/demo-task-007.sh`（11 步，可对同一个库重复执行，每次带随机后缀）真实跑通：
 建版本 → 提交实验 → 在线执行两个 Run → 评测 Worker 领取并提交结论 → 落库与收口 →
-四类非法提交被拒 → 重评新建批次 → 取消批次 → 批次列表。输出示例见 §7.1。
+四类非法提交被拒 → 重评新建批次 → 取消批次 → 批次列表。关键输出：
+
+```
+== 4. 评测 Worker 领取 Job：输入含算子配置、Run 快照与轨迹读取契约 ==
+  算子与配置："key":"output.non_empty","version":1,"type":"RULE"
+  轨迹契约："sealed":true,"eventsUrl":"/api/v1/runs/.../events?limit=200&attemptId=...","eventCount":4
+  输出快照："output":{"answer":"2"}     数据集期望："expected":{"answer":"2"}
+
+== 5. 提交结论（verdict/score/evidence） ==
+回执："attemptId":"01M5AA8RZ1F19V0P2MMT3Z8NAM","status":"COMPLETED"
+证据引用的是该 Run 的事件：01M5AA5QPZS61BEMSEQ71VTPW1
+
+== 7. 落库结果与收口 ==
+run.status=COMPLETED
+  output.non_empty v1 RULE  → 结论 PASS 分数 1.00000 依据「输出非空」
+  answer.exact_match v1 RULE → 结论 PASS 分数 1.00000 依据「与期望值一致」
+批次状态=COMPLETED  runCount=2  expectedJobCount=4
+
+== 8. 五类非法提交全部被拒（不是 500，而是带错误码的 4xx） ==
+分数越界(1.5)      → HTTP 400 VALIDATION_ERROR
+分数精度超限       → HTTP 400 VALIDATION_ERROR
+generatedBy 不匹配 → HTTP 409 STALE_ATTEMPT
+旧令牌重放         → HTTP 409 STALE_ATTEMPT
+完成后迟到失败回执 → HTTP 409 STALE_ATTEMPT
+
+== 9. 重评：同一批 Run 换方案版本 → 新批次，历史结果与 Run 状态不动 ==
+该 Run 关联的批次数：2（初始 1 个 + 重评 1 个）
+  批次 no=1 trigger=INITIAL       status=COMPLETED jobs=4
+  批次 no=2 trigger=REEVALUATION  status=COMPLETED jobs=1
+run.status=COMPLETED（重评不回写已完成的历史 Run）
+
+== 10. 取消未终态批次 ==
+取消后 status=CANCELLED jobs.total=1 skipped=1；再次查询批次详情仍是 CANCELLED
+
+== 11. 批次列表 ==
+  批次 3 MANUAL / 批次 2 REEVALUATION / 批次 1 INITIAL
+  状态 CANCELLED / COMPLETED / COMPLETED
+```
 
 > 领取是全局队列语义：库里若残留别次演示的待评测 Job，脚本会把不属于本实验的任务
 > 以 `DEMO_DEFERRED`（安排重试、不判失败）放回队列，而不是替别人做完或算作失败。
+> 脚本还有两条为真实环境做的约束：①领取**之前**就把证据事件 id 取好，领取后只做一次提交请求
+> （真实 Worker 会心跳续租，脚本是一次性 Worker）；②解析 JSON 用一次 `awk` 摊平字段再取，
+> 而不是反复 `grep`/`sed`——本机每起一个子进程约 1s，反复解析会把 60s 租约耗光。
 
 ## 8. 已知限制与未验证项
 
@@ -186,3 +226,16 @@ Run 只在 INITIAL 批次全部 Job 终态后 EVALUATING→COMPLETED/FAILED；**
 | Worker | `app/evaluator/*`、`app/poller.py`、`app/runtime.py`、`app/client.py`、2 个测试文件 |
 | 前端 | `types/domain.ts`、`api/evaluation.ts`、`RunDetailView.vue`、`ExperimentDetailView.vue` |
 | 契约与文档 | `docs/contracts/openapi-evaluation.yaml`（新建）、`openapi-execution.yaml` 的 Job/WorkItem 扩展、`docs/README.md`、`tools/demo-task-007.sh` |
+## 10. Git 与 CI
+
+| 项 | 值 |
+| --- | --- |
+| 分支 | `develop`（未合并 PR，未开始 TASK-008） |
+| 提交 | `9c746fa` 后端引擎 → `20d3137` 测试 → `52ac728` Worker → `a620010` 前端 → `76197ad` 契约/演示/报告 |
+| CI Run ID | **39266901234**，5 个 Job 全绿 |
+| CI 实跑数字 | 后端两条 MySQL 腿：单元 75、集成 153（0 失败 0 跳过）；Worker 92 passed；Web 构建成功；设计字典自检通过（DDL 6 迁移 / Java 76 文件 / 静态检查 1260 项） |
+| 数据库迁移 | 无新增。Flyway V1~V7 与 `migrations.lock.json` 未改动（`gen_ddl_from_dict.py --check` 确认 6 个迁移未被篡改） |
+
+CI 的两条 MySQL 腿分别是 MySQL 8.0.36 与 MySQL 8.0，均开启 `REPOPILOT_IT_REQUIRE_ALL_UP=true`
+（就绪探针真的要求 DB 与 RabbitMQ 都 UP），因此本报告中的"0 跳过"是硬断言的结果，
+不是把外部依赖检查关掉换来的。

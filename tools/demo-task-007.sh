@@ -45,6 +45,33 @@ worker_post_status() { # worker_post_status <path> <json>（走 /internal/v1）
        -H 'Content-Type: application/json' -H "Authorization: Bearer $WORKER_TOKEN" -d "$2"
 }
 field() { grep -o "\"$1\":\"\?[^\",}]*" | head -1 | sed "s/\"$1\":\"\?//"; }
+# KV 提取：一次 awk 把响应里的关键字段摊平成 "key:value key:value"，之后只用 bash 内建取值。
+# 理由是实测过的：本机起一个子进程约 1s，领取后如果用十来次 field() 解析 JSON，
+# 租约（60s）会在解析里耗光；而本机 grep -E 对带引号的 alternation 模式不可靠，所以用 awk。
+kv_flatten() { # kv_flatten <json> <key...>
+  local json="$1"; shift
+  printf '%s' "$json" | awk -v keys=" $* " '
+    BEGIN { n = split(keys, ks, " ") }
+    {
+      for (i = 1; i <= n; i++) {
+        k = ks[i]
+        if (seen[k] == 1) continue
+        pat = "\"" k "\":\"[^\"]*\""
+        if (match($0, pat)) {
+          v = substr($0, RSTART, RLENGTH)
+          gsub(/\042/, "", v)
+          printf "%s ", v
+          seen[k] = 1
+        }
+      }
+    }'
+}
+kv() { # kv <flattened> <key>
+  case " $1" in
+    *" $2:"*) local rest="${1#*"$2:"}"; printf '%s' "${rest%% *}" ;;
+    *) printf '' ;;
+  esac
+}
 code_of() { grep -o '"code":"[A-Z_]*"' /tmp/demo7.$$ | head -1 | sed 's/"code":"//;s/"//'; }
 ulid() {
   local alphabet=0123456789ABCDEFGHJKMNPQRSTVWXYZ ts out='' i
@@ -111,11 +138,12 @@ DEFERRED=0
 for round in $(seq 1 12); do
   CLAIM=$(worker_post "/internal/v1/work/claim" \
     "{\"workerId\":\"$RUNNER\",\"capabilities\":[\"RUN:MOCK\"],\"maxTasks\":1}")
-  T_RUN=$(echo "$CLAIM" | field runId)
+  RUN_KV=$(kv_flatten "$CLAIM" runId attemptId leaseToken experimentId)
+  T_RUN=$(kv "$RUN_KV" runId)
   [ -n "$T_RUN" ] || break
-  T_ATTEMPT=$(echo "$CLAIM" | field attemptId)
-  T_LEASE=$(echo "$CLAIM" | field leaseToken)
-  T_EXP=$(echo "$CLAIM" | field experimentId)
+  T_ATTEMPT=$(kv "$RUN_KV" attemptId)
+  T_LEASE=$(kv "$RUN_KV" leaseToken)
+  T_EXP=$(kv "$RUN_KV" experimentId)
   if [ "$T_EXP" != "$EXP_ID" ]; then
     worker_post "/internal/v1/run-attempts/$T_ATTEMPT/fail" \
       "{\"leaseToken\":\"$T_LEASE\",\"errorCode\":\"DEMO_DEFERRED\",\"errorMessage\":\"不属于本演示的实验，放回队列\",\"retryableHint\":true}" >/dev/null
@@ -149,21 +177,31 @@ done
 [ "$DEFERRED" -gt 0 ] && echo "（另外 $DEFERRED 个别次演示遗留的 Run 已放回队列）"
 OLDEST_RUN=$(echo "$OWN_RUNS" | awk '{print $1}')
 
+# 证据要引用本 Run 的事件 id。**领取之前**先取好：领取后只有租约时限，
+# 真实 Worker 会心跳续租，而这个脚本是"一次性 Worker"，不能在租约期内做慢查询。
+EVENT_EVIDENCE=""
+for R in $OWN_RUNS; do
+  E=$(get "/runs/$R/events?limit=1" | grep -o '"eventId":"[^"]*"' | head -1 | sed 's/"eventId":"//;s/"//')
+  EVENT_EVIDENCE="$EVENT_EVIDENCE $R=$E"
+done
+echo "  预取证据事件：$(echo "$EVENT_EVIDENCE" | tr ' ' '\n' | grep '=' | paste -sd' ')"
+
 echo
 echo "== 4. 评测 Worker 领取 Job：输入含算子配置、Run 快照与轨迹读取契约 =="
 EVALER="demo-eval-$SUFFIX"
 claim_job() { # 只返回属于本演示的 Job；别人的任务放回队列（安排重试，不判失败）
-  local resp jid jattempt jlease jrun n
+  local resp kv jid jattempt jlease jrun n
   for n in $(seq 1 15); do
     resp=$(worker_post "/internal/v1/work/claim" \
       "{\"workerId\":\"$EVALER\",\"capabilities\":[\"EVAL:output.non_empty\",\"EVAL:answer.exact_match\"],\"maxTasks\":1}")
-    jid=$(echo "$resp" | field jobId)
+    kv=$(kv_flatten "$resp" jobId attemptId leaseToken runId)
+    jid=$(kv "$kv" jobId)
     [ -n "$jid" ] || return 1
-    jattempt=$(echo "$resp" | field attemptId)
-    jlease=$(echo "$resp" | field leaseToken)
-    jrun=$(echo "$resp" | field runId)
+    jattempt=$(kv "$kv" attemptId)
+    jlease=$(kv "$kv" leaseToken)
+    jrun=$(kv "$kv" runId)
     case " $OWN_RUNS " in
-      *" $jrun "*) CLAIM_JOB="$resp"; DEFERRED_JOBS=$((DEFERRED_JOBS + 1)); return 0 ;;
+      *" $jrun "*) CLAIM_JOB="$resp"; CLAIM_KV="$kv"; DEFERRED_JOBS=$((DEFERRED_JOBS + 1)); return 0 ;;
       *) worker_post "/internal/v1/job-attempts/$jattempt/fail" \
            "{\"leaseToken\":\"$jlease\",\"errorCode\":\"DEMO_DEFERRED\",\"errorMessage\":\"不属于本演示的 Run，放回队列\",\"retryableHint\":true}" >/dev/null ;;
     esac
@@ -172,10 +210,25 @@ claim_job() { # 只返回属于本演示的 Job；别人的任务放回队列（
 }
 DEFERRED_JOBS=0
 claim_job || { echo "没有领到本演示的评测任务" >&2; exit 1; }
-JOB_ID=$(echo "$CLAIM_JOB" | field jobId)
-JOB_ATTEMPT=$(echo "$CLAIM_JOB" | field attemptId)
-JOB_LEASE=$(echo "$CLAIM_JOB" | field leaseToken)
-echo "kind=$(echo "$CLAIM_JOB" | field kind)  jobId=$JOB_ID  attemptNo=$(echo "$CLAIM_JOB" | field attemptNo) run=$(echo "$CLAIM_JOB" | field runId)"
+
+echo "== 5. 提交结论（verdict/score/evidence）：先是非空判定 PASS =="
+JOB_ID=$(kv "$CLAIM_KV" jobId)
+JOB_ATTEMPT=$(kv "$CLAIM_KV" attemptId)
+JOB_LEASE=$(kv "$CLAIM_KV" leaseToken)
+CLAIMED_RUN=$(kv "$CLAIM_KV" runId)
+EVENT_ID=$(echo "$EVENT_EVIDENCE" | tr ' ' '\n' | grep "^$CLAIMED_RUN=" | cut -d= -f2)
+# 领取后立刻提交：这段之间不允许再起慢查询，租约只有 60s
+COMPLETE=$(worker_post "/internal/v1/job-attempts/$JOB_ATTEMPT/complete" \
+  "{\"leaseToken\":\"$JOB_LEASE\",\"verdict\":\"PASS\",\"score\":1.00000,\"reason\":\"输出非空\",\"evidence\":[{\"type\":\"event\",\"eventId\":\"$EVENT_ID\"}],\"result\":{\"outputPath\":\"answer\",\"outputPresent\":true},\"generatedBy\":\"RULE\"}")
+case "$COMPLETE" in
+  *'"code":"OK"'*) echo "回执：$(echo "$COMPLETE" | grep -o '"attemptId":"[^"]*","status":"[A-Z_]*"' | head -1)" ;;
+  *) echo "提交结论失败：$COMPLETE" >&2; exit 1 ;;
+esac
+echo "证据引用的是该 Run 的事件：$EVENT_ID"
+
+echo
+echo "== 4'. 刚才那份任务输入长什么样（领取后的内容在提交完成后回看） =="
+echo "kind=$(kv "$CLAIM_KV" kind)  jobId=$JOB_ID  attemptNo=$(kv "$CLAIM_KV" attemptNo) run=$CLAIMED_RUN"
 [ "$DEFERRED_JOBS" -gt 1 ] && echo "（另有 $((DEFERRED_JOBS - 1)) 个别次演示遗留的 Job 已放回队列）"
 echo "  算子与配置：$(echo "$CLAIM_JOB" | grep -o '"key":"[^"]*","version":[0-9]*,"type":"[^"]*"' | head -1)"
 echo "  轨迹契约：$(echo "$CLAIM_JOB" | grep -o '"sealed":[a-z]*,"eventsUrl":"[^"]*","eventCount":[0-9]*' | head -1)"
@@ -183,23 +236,14 @@ echo "  输出快照：$(echo "$CLAIM_JOB" | grep -o '"output":{"answer":"[^"]*"
 echo "  数据集期望：$(echo "$CLAIM_JOB" | grep -o '"expected":{"answer":"[^"]*"}' | head -1)"
 
 echo
-echo "== 5. 提交结论（verdict/score/evidence）：先是非空判定 PASS =="
-EVENT_ID=$(get "/runs/$OLDEST_RUN/events?limit=10" | grep -o '"eventId":"[^"]*"' | head -1 | sed 's/"eventId":"//;s/"//')
-COMPLETE=$(worker_post "/internal/v1/job-attempts/$JOB_ATTEMPT/complete" \
-  "{\"leaseToken\":\"$JOB_LEASE\",\"verdict\":\"PASS\",\"score\":1.00000,\"reason\":\"输出非空\",\"evidence\":[{\"type\":\"event\",\"eventId\":\"$EVENT_ID\"}],\"result\":{\"outputPath\":\"answer\",\"outputPresent\":true},\"generatedBy\":\"RULE\"}")
-case "$COMPLETE" in
-  *'"code":"OK"'*) echo "回执：$(echo "$COMPLETE" | grep -o '"attemptId":"[^"]*","status":"[A-Z_]*"' | head -1)" ;;
-  *) echo "提交结论失败：$COMPLETE" >&2; exit 1 ;;
-esac
-echo "证据引用的是本 Run 的事件：$EVENT_ID"
 
 echo
 echo "== 6. 剩余 Job 逐个领取执行：回答 2 的 Run 对上期望 4 的 case 会判 FAIL =="
 while claim_job; do
-  NA=$(echo "$CLAIM_JOB" | field attemptId)
-  NL=$(echo "$CLAIM_JOB" | field leaseToken)
-  NID=$(echo "$CLAIM_JOB" | field jobId)
-  NRUN=$(echo "$CLAIM_JOB" | field runId)
+  NA=$(kv "$CLAIM_KV" attemptId)
+  NL=$(kv "$CLAIM_KV" leaseToken)
+  NID=$(kv "$CLAIM_KV" jobId)
+  NRUN=$(kv "$CLAIM_KV" runId)
   KEY=$(echo "$CLAIM_JOB" | grep -o '"key":"[^"]*"' | head -1 | sed 's/"key":"//;s/"//')
   if [ "$KEY" = "answer.exact_match" ]; then
     EXP=$(echo "$CLAIM_JOB" | grep -o '"expected":{"answer":"[^"]*"}' | head -1 | grep -o '[0-9]*"$' | tr -d '"')
@@ -222,7 +266,7 @@ echo "== 7. 落库结果与收口：Run=COMPLETED、批次=COMPLETED，前端读
 DETAIL=$(get "/runs/$OLDEST_RUN")
 echo "run.status=$(echo "$DETAIL" | field status)  finishedAt=$(echo "$DETAIL" | field finishedAt)"
 echo "评测任务："
-echo "$DETAIL" | grep -o '"evaluatorKey":"[^"]*","evaluatorVersion":[0-9]*,"evaluatorType":"[A-Z_]*"' | sed 's/"evaluatorKey":"/  /;s/"//g;s/,"evaluatorVersion"/ v/;s/,"evaluatorType":"/ /'
+echo "$DETAIL" | grep -o '"evaluatorKey":"[^"]*","evaluatorVersion":[0-9]*,"evaluatorType":"[A-Z_]*"' | sed 's/"//g;s/evaluatorKey:/  /;s/,evaluatorVersion/ v/;s/,evaluatorType:/ /'
 echo "$DETAIL" | grep -o '"verdict":"[A-Z_]*"' | sed 's/"verdict":"/  结论 /;s/"//g'
 echo "$DETAIL" | grep -o '"score":[0-9.]*' | sed 's/"score":/  分数 /' | head -4
 echo "$DETAIL" | grep -o '"reason":"[^"]*"' | sed 's/"reason":"/  依据 /;s/"//g' | head -4
@@ -258,9 +302,15 @@ case "$RE_RECHECK" in
   *) echo "重评提交失败：$RE_RECHECK" >&2; exit 1 ;;
 esac
 SUMMARY=$(get "/runs/$OLDEST_RUN/evaluation-jobs")
-echo "两个批次的结果并存：批次数=$(echo "$SUMMARY" | grep -o '"batchId":' | sort -u | wc -l | tr -d ' ')"
-echo "$SUMMARY" | grep -o '"batchNo":[0-9]*' | sed 's/"batchNo":/  batchNo /'
-echo "$SUMMARY" | grep -o '"verdict":"[A-Z_]*"' | sed 's/"verdict":"/  结论 /;s/"//g'
+BATCH_IDS=$(echo "$SUMMARY" | grep -o '"batchId":"[^"]*"' | sed 's/"batchId":"//;s/"//' | sort -u)
+echo "该 Run 关联的批次数：$(printf '%s\n' "$BATCH_IDS" | grep -c .)（初始 1 个 + 重评 1 个）"
+for B in $BATCH_IDS; do
+  V=$(get "/evaluation-batches/$B")
+  echo "  批次 $B no=$(echo "$V" | field batchNo) trigger=$(echo "$V" | field triggerType) status=$(echo "$V" | field status) jobs=$(echo "$V" | grep -o '"total":[0-9]*' | head -1 | cut -d: -f2)"
+done
+echo "  判定与分数（按批次号倒序，批次 2 是重评）："
+echo "$SUMMARY" | grep -o '"batchNo":[0-9]*,"evaluatorKey":"[^"]*"' | sed 's/"batchNo":/    批次 /;s/,"evaluatorKey":"/ /;s/"//'
+echo "$SUMMARY" | grep -o '"verdict":"[A-Z_]*"' | sed 's/"verdict":"/    结论 /;s/"//g'
 echo "run.status=$(get "/runs/$OLDEST_RUN" | field status)（重评不回写已完成的历史 Run）"
 
 echo
