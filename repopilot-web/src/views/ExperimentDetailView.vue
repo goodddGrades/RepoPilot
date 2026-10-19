@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Refresh, Upload, VideoPlay } from '@element-plus/icons-vue'
+import { ArrowLeft, DataAnalysis, Refresh, Upload, VideoPlay } from '@element-plus/icons-vue'
 
 import * as experimentApi from '@/api/experiments'
 import * as evaluationApi from '@/api/evaluation'
@@ -123,6 +123,11 @@ async function cancel(): Promise<void> {
 /** 导入页带上实验 id：省掉用户在下拉里再找一遍。 */
 function goImport(): void {
   void router.push({ path: '/imports', query: { experimentId: experimentId.value } })
+}
+
+/** 报告必须绑定具体实验，所以从实验详情进入而不是一级菜单。 */
+function goReport(): void {
+  void router.push(`/experiments/${experimentId.value}/report`)
 }
 
 function openRun(row: RunView): void {
@@ -296,6 +301,7 @@ function batchCancelable(batch: EvaluationBatchView): boolean {
           提交
         </el-button>
         <el-button v-if="canCancel" :loading="submitting" @click="cancel">取消实验</el-button>
+        <el-button :icon="DataAnalysis" @click="goReport">实验报告</el-button>
       </div>
     </header>
 

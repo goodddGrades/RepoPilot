@@ -327,6 +327,16 @@ abstract class AbstractExecutionIT extends AbstractApiIT {
 
     /** 在既有方案下追加一个已发布版本：需要"同 Run 不同方案版本"或自定义算子集时用。 */
     protected String publishPlan(List<PlanItem> items) {
+        return publishPlan(items, null);
+    }
+
+    /**
+     * 同上，但可额外写入 {@code config.gateRules}（TASK-010 报告门禁用）。
+     *
+     * <p>{@code gateJson} 是 {@code gateRules} 对象的 JSON 文本；为 {@code null} 时不写该字段，
+     * 用于验证"没有配置门禁规则"这一分支。
+     */
+    protected String publishPlan(List<PlanItem> items, String gateJson) {
         Scenario seed = seedPublished(1);
         String planId = jdbc.queryForObject("SELECT plan_id FROM evaluation_plan_versions WHERE id = ?",
                 String.class, seed.planVersionId());
@@ -339,7 +349,11 @@ abstract class AbstractExecutionIT extends AbstractApiIT {
             node.set("config", json(planItem.config()));
         }
         ObjectNode body = objectMapper.createObjectNode();
-        body.putObject("config").put("threshold", 0.5);
+        ObjectNode config = body.putObject("config");
+        config.put("threshold", 0.5);
+        if (gateJson != null) {
+            config.set("gateRules", json(gateJson));
+        }
         body.set("items", array);
         ResponseEntity<String> created = post("/api/v1/evaluation-plans/" + planId + "/versions",
                 idem("plan"), body.toString());

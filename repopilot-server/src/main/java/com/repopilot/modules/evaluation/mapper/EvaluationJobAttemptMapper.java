@@ -219,4 +219,38 @@ public interface EvaluationJobAttemptMapper {
              ORDER BY attempt_no ASC
             """)
     List<EvaluationJobAttempt> listByJob(@Param("jobId") String jobId);
+
+    // ================================================================== TASK-010
+
+    /**
+     * 某批次下全部 Job Attempt（含重试），用于报告的"平台实际执行成本"口径。
+     *
+     * <p>报告必须把"最终观察成本"（只算被接受的那次Attempt）和"平台实际执行成本"
+     * （所有 RunAttempt 与 JobAttempt，含被重试掉的那些）分开，否则等于告诉用户
+     * 一次实验只花了成功那次的费用，重试与 Judge 的开销全部消失。
+     */
+    @Select("""
+            SELECT a.id,
+                   a.job_id,
+                   a.attempt_no,
+                   a.worker_id,
+                   a.status,
+                   a.lease_token_hash,
+                   a.lease_until,
+                   a.deadline_at,
+                   a.completion_hash,
+                   a.result_json,
+                   a.usage_json,
+                   a.error_code,
+                   a.error_message,
+                   a.started_at,
+                   a.finished_at,
+                   a.created_at,
+                   a.updated_at
+              FROM evaluation_job_attempts a
+              JOIN evaluation_jobs j ON j.id = a.job_id
+             WHERE j.batch_id = #{batchId}
+             ORDER BY a.job_id ASC, a.attempt_no ASC
+            """)
+    List<EvaluationJobAttempt> listByBatch(@Param("batchId") String batchId);
 }

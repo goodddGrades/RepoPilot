@@ -611,6 +611,44 @@ public interface EvaluationRunMapper {
     @Select("SELECT COUNT(*) FROM evaluation_batch_runs WHERE batch_id = #{batchId}")
     long countByBatch(@Param("batchId") String batchId);
 
+    // ---- TASK-010：报告聚合用的只读投影 ----
+
+    /**
+     * 某实验全部 Run 的报告投影（不分页）。
+     *
+     * <p>报告要按 Target 分组、按 {@code (datasetCaseId, repeatIndex)} 配对，并统计
+     * 最终观察成本，因此必须一次拿到全部行——分页聚合会得到"只统计了前 N 页"的
+     * 分母，那种数字比没有更糟。
+     *
+     * <p>范围是「实验下全部 Run」而不是「某批次的 Run」：槽位覆盖率的分母是
+     * {@code expectedRunCount}，而批次登记表只登记了被送去评测的那些 Run。
+     * 离线导入后未评测的槽位正是要靠这个差异体现出来的。
+     */
+    @Select("""
+            SELECT r.id,
+                   r.experiment_id,
+                   r.experiment_target_id,
+                   c.case_key,
+                   t.target_key,
+                   r.dataset_case_id,
+                   r.repeat_index,
+                   r.mode,
+                   r.status,
+                   r.task_outcome,
+                   r.attempt_count,
+                   r.accepted_attempt_id,
+                   r.usage_json,
+                   r.started_at,
+                   r.finished_at
+              FROM evaluation_runs r
+              JOIN dataset_cases c ON c.id = r.dataset_case_id
+              JOIN experiment_targets t ON t.id = r.experiment_target_id
+             WHERE r.experiment_id = #{experimentId}
+             ORDER BY t.target_key ASC, c.case_key ASC, r.repeat_index ASC, r.id ASC
+            """)
+    List<com.repopilot.modules.trace.dto.ReportRunRow> listReportRows(
+            @Param("experimentId") String experimentId);
+
     /**
      * 评测收口：Run 的 required Job 全部 COMPLETED 时 EVALUATING→COMPLETED。
      *

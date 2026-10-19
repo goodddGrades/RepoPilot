@@ -401,6 +401,45 @@ public interface EvaluationJobMapper {
             """)
     List<StatusCountRow> countByStatus(@Param("batchId") String batchId);
 
+    // ================================================================== TASK-010
+
+    /**
+     * 整个批次的 Job 明细（Job + 方案项 + 算子标识）。
+     *
+     * <p>报告要按批次统计算子通过率与平均得分，必须一次拿到"这个批次里每个 Run 的每个
+     * 算子判了什么"，否则只能在应用层按 Run 逐个查，那是 N+1。
+     *
+     * <p>刻意不 JOIN {@code evaluation_results}：结论表与 Job 表分属两个聚合，
+     * 结果由 {@code EvaluationResultMapper#findByJobIds} 单独取，避免一次 JOIN 在
+     * 结果缺失时把整行吞掉（那正是"技术失败"与"没结论"必须区分的地方）。
+     */
+    @Select("""
+            SELECT j.id,
+                   j.run_id,
+                   j.batch_id,
+                   b.batch_no,
+                   j.evaluation_plan_version_id,
+                   j.evaluation_plan_item_id,
+                   i.execution_order,
+                   i.`required`,
+                   d.evaluator_key,
+                   d.version AS evaluator_version,
+                   d.evaluator_type,
+                   j.status,
+                   j.attempt_count,
+                   j.error_code,
+                   j.error_message,
+                   j.started_at,
+                   j.finished_at
+              FROM evaluation_jobs j
+              JOIN evaluation_batches b ON b.id = j.batch_id
+              JOIN evaluation_plan_items i ON i.id = j.evaluation_plan_item_id
+              JOIN evaluator_definitions d ON d.id = i.evaluator_definition_id
+             WHERE j.batch_id = #{batchId}
+             ORDER BY j.run_id ASC, i.execution_order ASC, j.id ASC
+            """)
+    List<JobListRow> listByBatch(@Param("batchId") String batchId);
+
     /**
      * 某 Run 在某批次的 Job 终态汇总。
      *

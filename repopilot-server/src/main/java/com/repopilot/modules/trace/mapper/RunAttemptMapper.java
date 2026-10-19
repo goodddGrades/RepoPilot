@@ -179,6 +179,38 @@ public interface RunAttemptMapper {
     long countByRun(@Param("runId") String runId);
 
     /**
+     * 某实验全部 RunAttempt（含被重试掉的），用于报告的"平台实际执行成本"Agent 侧口径。
+     *
+     * <p>与最终观察成本分开：只统计被接受的那次 Attempt 会让重试开销从报告里消失，
+     * 用户看到的成本会显著低于平台真实支出。
+     */
+    @Select("""
+            SELECT a.id,
+                   a.run_id,
+                   a.attempt_no,
+                   a.worker_id,
+                   a.status,
+                   a.lease_token_hash,
+                   a.lease_until,
+                   a.deadline_at,
+                   a.completion_hash,
+                   a.output_json,
+                   a.output_artifact_id,
+                   a.usage_json,
+                   a.started_at,
+                   a.finished_at,
+                   a.error_code,
+                   a.error_message,
+                   a.created_at,
+                   a.updated_at
+              FROM run_attempts a
+              JOIN evaluation_runs r ON r.id = a.run_id
+             WHERE r.experiment_id = #{experimentId}
+             ORDER BY a.run_id ASC, a.attempt_no ASC
+            """)
+    List<RunAttempt> listByExperiment(@Param("experimentId") String experimentId);
+
+    /**
      * 过期租约候选（回收器用）。
      *
      * <p>不加行锁：真正的竞态由"锁 Run 行 + 条件更新"解决。这里只负责挑出候选，

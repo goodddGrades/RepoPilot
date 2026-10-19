@@ -55,6 +55,7 @@
 | [`contracts/openapi-trace.yaml`](./contracts/openapi-trace.yaml) | 统一 Trace 查询（`GET /runs/{id}/events`、签名游标分页）路由与 Schema |
 | [`contracts/openapi-evaluation.yaml`](./contracts/openapi-evaluation.yaml) | 评测执行（重评批次/取消、评测 Attempt 心跳与结论提交）路由与 Schema |
 | [`contracts/openapi-annotation.yaml`](./contracts/openapi-annotation.yaml) | 人工标注与失败归因（复核任务创建/原子领取/提交/审核/取消、派单建议）路由与 Schema |
+| [`contracts/openapi-reporting.yaml`](./contracts/openapi-reporting.yaml) | 实验报告（`GET /experiments/{id}/report`：槽位级指标/配对回归/门禁）路由与 Schema |
 | [`contracts/event-envelope.schema.json`](./contracts/event-envelope.schema.json) | 事件信封 |
 | [`contracts/trace-event.schema.json`](./contracts/trace-event.schema.json) | 轨迹事件 |
 | [`contracts/dataset-case.schema.json`](./contracts/dataset-case.schema.json) | 数据集样本 |
