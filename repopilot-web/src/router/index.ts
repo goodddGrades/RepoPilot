@@ -53,6 +53,24 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/EvaluatorsView.vue'),
         meta: { title: '算子清单' },
       },
+      {
+        path: 'experiments',
+        name: 'experiments',
+        component: () => import('@/views/ExperimentListView.vue'),
+        meta: { title: '在线 / 离线评测' },
+      },
+      {
+        path: 'experiments/:id',
+        name: 'experiment-detail',
+        component: () => import('@/views/ExperimentDetailView.vue'),
+        meta: { title: '实验详情' },
+      },
+      {
+        path: 'runs/:id',
+        name: 'run-detail',
+        component: () => import('@/views/RunDetailView.vue'),
+        meta: { title: 'Run 执行证据' },
+      },
     ],
   },
   {

@@ -133,3 +133,134 @@ export interface EvaluatorView {
   createdAt: string
   updatedAt: string
 }
+
+// ---------------------------------------------------------------------------
+// TASK-004 在线执行
+// ---------------------------------------------------------------------------
+
+export type ExperimentStatus =
+  | 'DRAFT'
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'COMPLETED'
+  | 'PARTIAL_FAILED'
+  | 'FAILED'
+  | 'CANCELLED'
+
+export type RunMode = 'ONLINE' | 'OFFLINE'
+
+export type RunStatus =
+  | 'PENDING'
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'EVALUATING'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'TIMED_OUT'
+  | 'CANCELLED'
+
+export type TaskOutcome = 'UNKNOWN' | 'SUCCESS' | 'FAILURE' | 'NOT_APPLICABLE'
+
+export type AttemptStatus = 'RUNNING' | 'COMPLETED' | 'FAILED' | 'TIMED_OUT' | 'CANCELLED'
+
+export type JobStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'SKIPPED'
+
+export interface ExperimentTargetView {
+  id: string
+  targetKey: string
+  displayName: string
+  agentVersionId: string
+  repeatCount: number
+}
+
+export interface ExperimentView {
+  id: string
+  name: string
+  description?: string
+  mode: RunMode
+  status: ExperimentStatus
+  datasetVersionId: string
+  evaluationPlanVersionId: string
+  config: unknown
+  expectedRunCount: number
+  targets: ExperimentTargetView[]
+  startedAt?: string
+  finishedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RunView {
+  id: string
+  experimentId: string
+  experimentTargetId: string
+  targetKey?: string
+  datasetCaseId: string
+  caseKey?: string
+  repeatIndex: number
+  mode: RunMode
+  status: RunStatus
+  taskOutcome: TaskOutcome
+  attemptCount: number
+  acceptedAttemptId?: string
+  sealedAt?: string
+  startedAt?: string
+  finishedAt?: string
+  createdAt: string
+}
+
+export interface AttemptView {
+  id: string
+  attemptNo: number
+  workerId: string
+  status: AttemptStatus
+  leaseUntil?: string
+  deadlineAt?: string
+  errorCode?: string
+  errorMessage?: string
+  startedAt?: string
+  finishedAt?: string
+  createdAt: string
+}
+
+export interface JobBatchSummary {
+  batchId: string
+  batchNo: number
+  planVersionId: string
+  total: number
+  pending: number
+  running: number
+  completed: number
+  failed: number
+  skipped: number
+}
+
+export interface JobView {
+  id: string
+  batchId: string
+  batchNo: number
+  evaluatorKey: string
+  evaluatorVersion: number
+  executionOrder: number
+  required: boolean
+  status: JobStatus
+  attemptCount: number
+  errorCode?: string
+}
+
+export interface RunDetail {
+  run: RunView
+  output?: unknown
+  outputArtifactId?: string
+  usage?: unknown
+  observationMetadata?: unknown
+  traceEventCount: number
+  attempts: AttemptView[]
+  jobBatches: JobBatchSummary[]
+  jobs: JobView[]
+}
+
+export interface RunJobSummary {
+  batches: JobBatchSummary[]
+  jobs: JobView[]
+}
