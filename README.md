@@ -178,6 +178,10 @@ REPOPILOT_WORKER_TOKEN=local-demo-token ./mvnw spring-boot:run
 - **`REPOPILOT_WORKER_TOKEN` 必须显式设置**：留空时 `/internal/v1` 全部返回 401，
   Worker 无法领取任务。这是刻意的默认拒绝，不是缺陷。
 
+数据库连接变量名是 **`MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DATABASE` / `MYSQL_USER` / `MYSQL_PASSWORD`**
+（不是 `DB_*`；写错会得到 `Access denied`，因为值会落回默认值而不是报"变量未设置"）。
+凭据从根目录 `.env` 取，本机演示可用 `eval "$(./tools/it-mysql.sh env)"` 注入。
+
 ### 3.5 启动 Worker（8000）
 
 ```bash

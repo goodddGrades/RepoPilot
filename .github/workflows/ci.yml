@@ -30,6 +30,10 @@ jobs:
       - run: pip install -r tools/requirements-design.txt
       - name: 静态规则检查
         run: python tools/verify_design.py
+      - name: 字典检查器自测
+        # 检查器本身坏掉和代码坏掉同样致命：它会误报正确的代码，
+        # 或更糟——静默放过不一致。TASK-012 就遇到过 Mapper 改用常量拼接后误报。
+        run: python tools/gen_java_from_dict.py --self-test
       - name: 迁移 SQL 与字典一致
         run: python tools/gen_ddl_from_dict.py --check
       - name: 实体与 Mapper 与字典一致
