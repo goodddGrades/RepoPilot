@@ -216,7 +216,8 @@ public class AgentVersionService {
                 .orElseThrow(() -> notFound(versionId));
     }
 
-    private AgentVersion requireVersion(String id) {
+    /** 读取任意状态的配置版本；TASK-004 起也供实验模块读取（不跨模块用 Mapper）。 */
+    public AgentVersion requireVersion(String id) {
         return versionMapper.findById(id).orElseThrow(() -> notFound(id));
     }
 
@@ -248,5 +249,16 @@ public class AgentVersionService {
 
     static BusinessException notFound(String id) {
         return new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "AgentVersion 不存在: " + id);
+    }
+
+    // ---- TASK-004：供实验模块读取（不跨模块直接用 Mapper） ----
+
+    public AgentVersion requirePublishedVersion(String id) {
+        AgentVersion version = requireVersion(id);
+        if (version.getStatus() != VersionStatus.PUBLISHED) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "AgentVersion 不是已发布状态（当前 " + version.getStatus() + "）：" + id);
+        }
+        return version;
     }
 }

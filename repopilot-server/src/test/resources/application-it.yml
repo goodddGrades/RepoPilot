@@ -27,6 +27,16 @@ repopilot:
       # 同时保证测试不会污染开发环境的 var/storage。
       root: ${REPOPILOT_IT_STORAGE_ROOT:target/it-storage}
       max-bytes: 67108864
+  worker:
+    # 测试专用凭证（不是生产凭据）。集成测试用它访问 /internal/v1。
+    token: it-worker-token
+    # 关闭后台扫描：用例显式调用维护方法，避免"测试跑着跑着后台线程把状态改了"。
+    scheduler-enabled: false
+    lease: 60s
+    max-attempts-per-run: 2
+    retry-backoff-first: 1s
+    retry-backoff-second: 1s
+    task-deadline: 5m
 
 logging:
   level:

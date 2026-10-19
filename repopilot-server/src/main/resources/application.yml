@@ -89,6 +89,21 @@ repopilot:
       # 换到别处时同样要确认不在 Git 工作区内。
       root: ${STORAGE_LOCAL_ROOT:var/storage}
       max-bytes: 67108864
+  worker:
+    # 留空 => /internal/v1 一律 401（fail closed）。本机运行时从 .env 注入。
+    token: ${REPOPILOT_WORKER_TOKEN:}
+    # 逗号分隔；Spring 自动拆成 List。留空表示不限制 workerId（凭证仍然必须正确）。
+    allowed-ids: ${REPOPILOT_WORKER_IDS:}
+    lease: 60s
+    heartbeat-interval: 15s
+    max-tasks-limit: 10
+    max-attempts-per-run: 2
+    retry-backoff-first: 5s
+    retry-backoff-second: 15s
+    task-deadline: 10m
+    scan-interval: 2s
+    scan-interval-ms: 2000
+    scheduler-enabled: true
 
 logging:
   level:

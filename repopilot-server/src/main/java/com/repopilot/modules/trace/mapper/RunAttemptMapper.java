@@ -1,11 +1,16 @@
 package com.repopilot.modules.trace.mapper;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.repopilot.common.state.AttemptStatus;
 import com.repopilot.modules.trace.entity.RunAttempt;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -64,4 +69,159 @@ public interface RunAttemptMapper {
               WHERE id = #{id}
             """)
     Optional<RunAttempt> findById(@Param("id") String id);
+
+    // ---- TASK-004：租约、续租、终态与回收 ----
+
+    @Select("""
+            SELECT id,
+                   run_id,
+                   attempt_no,
+                   worker_id,
+                   status,
+                   lease_token_hash,
+                   lease_until,
+                   deadline_at,
+                   completion_hash,
+                   output_json,
+                   output_artifact_id,
+                   usage_json,
+                   started_at,
+                   finished_at,
+                   error_code,
+                   error_message,
+                   created_at,
+                   updated_at
+              FROM run_attempts
+             WHERE id = #{id}
+               FOR UPDATE
+            """)
+    Optional<RunAttempt> findByIdForUpdate(@Param("id") String id);
+
+    @Update("""
+            UPDATE run_attempts
+               SET lease_until = #{leaseUntil},
+                   updated_at = #{updatedAt}
+             WHERE id = #{id}
+               AND status = 'RUNNING'
+            """)
+    int updateLease(@Param("id") String id,
+                    @Param("leaseUntil") Instant leaseUntil,
+                    @Param("updatedAt") Instant updatedAt);
+
+    @Update("""
+            UPDATE run_attempts
+               SET status = 'COMPLETED',
+                   completion_hash = #{completionHash},
+                   output_json = #{outputJson},
+                   output_artifact_id = #{outputArtifactId,typeHandler=com.repopilot.common.id.UlidTypeHandler},
+                   usage_json = #{usageJson},
+                   finished_at = #{now},
+                   updated_at = #{now}
+             WHERE id = #{id}
+               AND status = 'RUNNING'
+            """)
+    int complete(@Param("id") String id,
+                 @Param("completionHash") String completionHash,
+                 @Param("outputJson") JsonNode outputJson,
+                 @Param("outputArtifactId") String outputArtifactId,
+                 @Param("usageJson") JsonNode usageJson,
+                 @Param("now") Instant now);
+
+    @Update("""
+            UPDATE run_attempts
+               SET status = #{status},
+                   completion_hash = #{completionHash},
+                   usage_json = #{usageJson},
+                   error_code = #{errorCode},
+                   error_message = #{errorMessage},
+                   finished_at = #{now},
+                   updated_at = #{now}
+             WHERE id = #{id}
+               AND status = 'RUNNING'
+            """)
+    int fail(@Param("id") String id,
+             @Param("status") AttemptStatus status,
+             @Param("completionHash") String completionHash,
+             @Param("usageJson") JsonNode usageJson,
+             @Param("errorCode") String errorCode,
+             @Param("errorMessage") String errorMessage,
+             @Param("now") Instant now);
+
+    @Select("""
+            SELECT id,
+                   run_id,
+                   attempt_no,
+                   worker_id,
+                   status,
+                   lease_token_hash,
+                   lease_until,
+                   deadline_at,
+                   completion_hash,
+                   output_json,
+                   output_artifact_id,
+                   usage_json,
+                   started_at,
+                   finished_at,
+                   error_code,
+                   error_message,
+                   created_at,
+                   updated_at
+              FROM run_attempts
+             WHERE run_id = #{runId}
+             ORDER BY attempt_no ASC
+             LIMIT #{limit} OFFSET #{offset}
+            """)
+    List<RunAttempt> listByRun(@Param("runId") String runId,
+                               @Param("limit") int limit,
+                               @Param("offset") int offset);
+
+    @Select("SELECT COUNT(*) FROM run_attempts WHERE run_id = #{runId}")
+    long countByRun(@Param("runId") String runId);
+
+    /**
+     * 过期租约候选（回收器用）。
+     *
+     * <p>不加行锁：真正的竞态由"锁 Run 行 + 条件更新"解决。这里只负责挑出候选，
+     * 多实例同时扫到同一行也不会重复回收（第二辆车影响行数为 0）。
+     */
+    @Select("""
+            SELECT id,
+                   run_id,
+                   attempt_no,
+                   worker_id,
+                   status,
+                   lease_token_hash,
+                   lease_until,
+                   deadline_at,
+                   completion_hash,
+                   output_json,
+                   output_artifact_id,
+                   usage_json,
+                   started_at,
+                   finished_at,
+                   error_code,
+                   error_message,
+                   created_at,
+                   updated_at
+              FROM run_attempts
+             WHERE status = 'RUNNING'
+               AND (lease_until < #{now} OR deadline_at <= #{now})
+             ORDER BY lease_until ASC
+             LIMIT #{limit}
+            """)
+    List<RunAttempt> findExpired(@Param("now") Instant now, @Param("limit") int limit);
+
+    @Update("""
+            UPDATE run_attempts a
+              JOIN evaluation_runs r ON r.id = a.run_id
+               SET a.status = 'CANCELLED',
+                   a.error_code = 'CANCELLED',
+                   a.error_message = '实验已取消',
+                   a.finished_at = #{now},
+                   a.updated_at = #{now}
+             WHERE r.experiment_id = #{experimentId}
+               AND a.status = 'RUNNING'
+            """)
+    int cancelRunningByExperiment(@Param("experimentId") String experimentId,
+                                  @Param("now") Instant now);
 }

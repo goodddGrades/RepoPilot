@@ -329,4 +329,26 @@ public class EvaluationPlanVersionService {
                         i.getExecutionOrder(), Boolean.TRUE.equals(i.getRequired()), i.getConfigJson()))
                 .toList();
     }
+
+    // ---- TASK-004：供实验模块读取（不跨模块直接用 Mapper） ----
+
+    public EvaluationPlanVersion requireVersion(String id) {
+        return versionMapper.findById(id)
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND,
+                        "EvaluationPlanVersion 不存在: " + id));
+    }
+
+    public EvaluationPlanVersion requirePublishedVersion(String id) {
+        EvaluationPlanVersion version = requireVersion(id);
+        if (version.getStatus() != VersionStatus.PUBLISHED) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "EvaluationPlanVersion 不是已发布状态（当前 " + version.getStatus() + "）：" + id);
+        }
+        return version;
+    }
+
+    /** 方案项按执行顺序返回；启动实验时用它冻结 Job 数量。 */
+    public List<EvaluationPlanItem> listItems(String planVersionId) {
+        return itemMapper.listByVersion(planVersionId);
+    }
 }

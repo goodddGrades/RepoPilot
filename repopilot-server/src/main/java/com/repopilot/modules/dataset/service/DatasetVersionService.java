@@ -241,4 +241,39 @@ public class DatasetVersionService {
         copy.setUpdatedAt(now);
         return copy;
     }
+
+    // ---- TASK-004：供实验模块读取（不跨模块直接用 Mapper） ----
+
+    public DatasetVersion requireVersion(String id) {
+        return versionMapper.findById(id)
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND,
+                        "DatasetVersion 不存在: " + id));
+    }
+
+    /**
+     * 实验开始时的版本校验。
+     *
+     * <p>只接受 PUBLISHED：DRAFT 的内容随时会变，用它启动实验等于让"同一实验"在不同时间
+     * 跑不同数据；ARCHIVED 是终态，也不允许新实验引用。
+     */
+    public DatasetVersion requirePublishedVersion(String id) {
+        DatasetVersion version = requireVersion(id);
+        if (version.getStatus() != VersionStatus.PUBLISHED) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "DatasetVersion 不是已发布状态（当前 " + version.getStatus() + "）：" + id);
+        }
+        return version;
+    }
+
+    /** 固定版本下的全部样本，顺序稳定，用于生成 Run 槽位。 */
+    public List<DatasetCase> listCases(String versionId) {
+        return caseMapper.findAllByVersion(versionId);
+    }
+
+    /** 按主键读取样本；领取任务时用它组装 Worker 输入。 */
+    public DatasetCase requireCase(String caseId) {
+        return caseMapper.findById(caseId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESOURCE_NOT_FOUND,
+                        "DatasetCase 不存在: " + caseId));
+    }
 }

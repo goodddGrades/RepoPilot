@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -58,4 +59,88 @@ public interface TraceEventMapper {
               WHERE id = #{id}
             """)
     Optional<TraceEvent> findById(@Param("id") String id);
+
+    // ---- TASK-004：事件幂等与清单摘要 ----
+
+    /**
+     * 批量按 eventId 读已存在事件并加锁。
+     *
+     * <p>为什么要加锁而不是"先查后插"：同一批事件重放与首次写入可能并发，
+     * 查询与插入之间的窗口足够让两边的 eventId 都"不存在"。
+     * 锁住已存在的行后，后到者要么看到行（走 DUPLICATE），要么插入撞唯一键（整批 409）。
+     */
+    @Select("""
+            <script>
+            SELECT id,
+                   event_id,
+                   run_id,
+                   run_attempt_id,
+                   source_event_id,
+                   event_hash,
+                   trace_id,
+                   span_id,
+                   parent_span_id,
+                   sequence_no,
+                   event_type,
+                   occurred_at,
+                   payload_json,
+                   artifact_id,
+                   created_at
+              FROM trace_events
+             WHERE event_id IN
+             <foreach collection="eventIds" item="eid" open="(" separator="," close=")">#{eid}</foreach>
+               FOR UPDATE
+            </script>
+            """)
+    List<TraceEvent> findByEventIdsForUpdate(@Param("eventIds") List<String> eventIds);
+
+    @Select("""
+            SELECT event_id
+              FROM trace_events
+             WHERE run_attempt_id = #{attemptId}
+             ORDER BY event_id ASC
+            """)
+    List<String> listEventIdsByAttempt(@Param("attemptId") String attemptId);
+
+    @Select("SELECT COUNT(*) FROM trace_events WHERE run_attempt_id = #{attemptId}")
+    long countByAttempt(@Param("attemptId") String attemptId);
+
+    @Select("""
+            <script>
+            SELECT id,
+                   event_id,
+                   run_id,
+                   run_attempt_id,
+                   source_event_id,
+                   event_hash,
+                   trace_id,
+                   span_id,
+                   parent_span_id,
+                   sequence_no,
+                   event_type,
+                   occurred_at,
+                   payload_json,
+                   artifact_id,
+                   created_at
+              FROM trace_events
+             WHERE run_id = #{runId}
+            <if test="attemptId != null"> AND run_attempt_id = #{attemptId} </if>
+             ORDER BY occurred_at ASC, id ASC
+             LIMIT #{limit} OFFSET #{offset}
+            </script>
+            """)
+    List<TraceEvent> listByRun(@Param("runId") String runId,
+                               @Param("attemptId") String attemptId,
+                               @Param("limit") int limit,
+                               @Param("offset") int offset);
+
+    @Select("""
+            <script>
+            SELECT COUNT(*)
+              FROM trace_events
+             WHERE run_id = #{runId}
+            <if test="attemptId != null"> AND run_attempt_id = #{attemptId} </if>
+            </script>
+            """)
+    long countByRun(@Param("runId") String runId, @Param("attemptId") String attemptId);
 }
