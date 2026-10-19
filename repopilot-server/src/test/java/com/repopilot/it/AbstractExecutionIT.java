@@ -53,6 +53,8 @@ abstract class AbstractExecutionIT extends AbstractApiIT {
         jdbc.update("DELETE FROM annotation_records");
         jdbc.update("DELETE FROM annotation_tasks");
         jdbc.update("DELETE FROM evaluation_results");
+        // TASK-007：Job 持有 active_attempt_id 循环引用 Attempt，先断开再删
+        jdbc.update("UPDATE evaluation_jobs SET active_attempt_id = NULL");
         jdbc.update("DELETE FROM evaluation_job_attempts");
         jdbc.update("DELETE FROM evaluation_jobs");
         jdbc.update("DELETE FROM evaluation_batch_runs");
