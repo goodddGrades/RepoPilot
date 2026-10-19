@@ -71,6 +71,27 @@ class Settings(BaseSettings):
     # false 时内联 output。两条路径都被 TASK-004 支持，默认内联便于演示。
     upload_artifact: bool = Field(default=False, validation_alias="WORKER_UPLOAD_ARTIFACT")
 
+    # ---- 真实 Runner（TASK-008）----
+    # 本机实际可用的 Coding Agent CLI 名称；未安装时声明 RUN:CLI 会在装配阶段失败。
+    runner_cli: str = Field(default="claude", validation_alias="WORKER_RUNNER_CLI")
+    # CLI 允许使用的工具白名单；留空表示不额外限制（仍受 CLI 自身权限模式约束）。
+    runner_cli_allowed_tools: str = Field(
+        default="", validation_alias="WORKER_RUNNER_CLI_ALLOWED_TOOLS")
+    runner_cli_max_turns: int = Field(default=8, validation_alias="WORKER_RUNNER_CLI_MAX_TURNS")
+    # 每次 Attempt 的工作目录根；留空表示用系统临时目录，每次 Attempt 独立且用后删除。
+    runner_workdir_root: str = Field(default="", validation_alias="WORKER_RUNNER_WORKDIR_ROOT")
+
+    # ---- Judge（TASK-008）----
+    # Judge 用的 CLI。Judge 与被测 Agent 分开配置：这里只影响 EVAL:judge.rubric。
+    judge_cli: str = Field(default="claude", validation_alias="WORKER_JUDGE_CLI")
+    # Judge 单次调用超时上限的兜底值；plan item config 里的 timeoutSeconds 更优先。
+    judge_timeout_seconds: float = Field(
+        default=90.0, validation_alias="WORKER_JUDGE_TIMEOUT_SECONDS")
+    # "claude"=真实模型调用；"stub"=确定性测试桩（CI 用，结果带 provider=stub 不冒充真实调用）
+    judge_provider: str = Field(default="claude", validation_alias="WORKER_JUDGE_PROVIDER")
+    judge_stub_verdict: str = Field(default="PASS", validation_alias="WORKER_JUDGE_STUB_VERDICT")
+    judge_stub_inject: str = Field(default="ok", validation_alias="WORKER_JUDGE_STUB_INJECT")
+
     @property
     def capabilities(self) -> list[str]:
         """能力字符串列表；空串被忽略。"""

@@ -58,7 +58,12 @@ class EvaluationInput:
 
 @dataclass
 class EvaluationOutcome:
-    """一次算子执行的结构化结论。"""
+    """一次算子执行的结构化结论。
+
+    ``usage`` 是算子**自身**消耗的资源（Judge 的 token 与成本），与被测 Run 的
+    usage 是两笔账：它必须独立上报，否则重试累计的 Judge 开销会丢失，
+    成本预算也算不准。缺字段就是未知，不写 0。
+    """
 
     verdict: str
     score: float | None
@@ -66,6 +71,7 @@ class EvaluationOutcome:
     evidence: list[dict[str, Any]] = field(default_factory=list)
     result: dict[str, Any] = field(default_factory=dict)
     generated_by: str = "RULE"
+    usage: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.verdict not in {"PASS", "FAIL", "INDETERMINATE", "NOT_APPLICABLE"}:

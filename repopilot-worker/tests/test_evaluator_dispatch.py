@@ -316,8 +316,30 @@ def test_evaluation_reads_trace_from_the_snapshot_url(settings: Settings) -> Non
     assert client.completes[0]["verdict"] == "PASS"
 
 
-def test_builtin_registry_exposes_the_four_v1_evaluators() -> None:
-    assert sorted(registry.builtin_keys()) == [
-        "answer.exact_match", "cost.budget", "output.non_empty", "trace.tool_error"]
+def test_registry_exposes_all_six_v1_evaluators() -> None:
+    """六个最小算子全部可构造（TASK-008 补齐 judge.rubric 与 test.command）。
+
+    `available_keys` 覆盖需要运行期资源的算子（Judge 走 CLI）；
+    `build` 才是"真的造一个实例"的入口。
+    """
+    assert sorted(registry.available_keys()) == [
+        "answer.exact_match", "cost.budget", "judge.rubric",
+        "output.non_empty", "test.command", "trace.tool_error"]
+
     with pytest.raises(RuntimeError):
         registry.resolve(["not.implemented"])
+
+
+def test_registry_build_requires_real_cli_for_runner_only_operators() -> None:
+    """test.command 不依赖外部进程，可直接构造。"""
+    evaluator = registry.build("test.command")
+
+    assert evaluator.key == "test.command"
+    assert evaluator.generated_by == "TEST"
+
+
+def test_registry_get_does_not_fabricate_resource_heavy_evaluators() -> None:
+    """`get` 只返回无外部依赖的算子：不能给出一个"连不上供应商"的假实例。"""
+    assert registry.get("output.non_empty") is not None
+    assert registry.get("judge.rubric") is None
+    assert registry.get("test.command") is None

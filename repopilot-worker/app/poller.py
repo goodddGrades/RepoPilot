@@ -150,7 +150,7 @@ class WorkerPoller:
         try:
             self._complete_job(attempt_id, lease_token, outcome.verdict, outcome.score,
                                outcome.reason, outcome.evidence, outcome.result,
-                               outcome.generated_by)
+                               outcome.generated_by, outcome.usage)
         except WorkerApiError as exc:
             if exc.is_stale:
                 summary.abandoned += 1
@@ -161,18 +161,19 @@ class WorkerPoller:
 
     def _complete_job(self, attempt_id: str, lease_token: str, verdict: str,
                       score: float | None, reason: str, evidence: list[dict[str, Any]],
-                      result: dict[str, Any], generated_by: str) -> None:
+                      result: dict[str, Any], generated_by: str,
+                      usage: dict[str, Any] | None = None) -> None:
         try:
             self.client.job_complete(attempt_id, lease_token, verdict=verdict, score=score,
                                      reason=reason, evidence=evidence, result=result,
-                                     generated_by=generated_by, usage=None)
+                                     generated_by=generated_by, usage=usage)
         except WorkerApiError as exc:
             if exc.is_stale or not exc.retryable:
                 raise
             log.warning("评测完成回执丢失，使用同一正文重放: %s", exc)
             self.client.job_complete(attempt_id, lease_token, verdict=verdict, score=score,
                                      reason=reason, evidence=evidence, result=result,
-                                     generated_by=generated_by, usage=None)
+                                     generated_by=generated_by, usage=usage)
 
     def _job_heartbeat_loop(self, attempt_id: str, lease_token: str,
                             stop: threading.Event, cancelled: threading.Event) -> None:

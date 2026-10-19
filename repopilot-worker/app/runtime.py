@@ -16,8 +16,10 @@ from app.common.logging import get_logger
 from app.config import Settings, get_settings
 from app.evaluator import registry
 from app.evaluator.base import Evaluator
+from app.evaluator.judge import JudgeRubric
 from app.poller import WorkerPoller
 from app.runner.base import Runner
+from app.runner.cli_coding_agent import CliCodingAgentRunner
 from app.runner.mock import MockRunner
 
 log = get_logger("app.runtime")
@@ -28,11 +30,33 @@ def build_runner(settings: Settings) -> Runner | None:
 
     纯评测 Worker（只声明 ``EVAL:*``）没有 Runner，这是合法配置：
     它领取评测任务，不参与 Agent 执行。
+
+    ``RUN:CLI`` 在**装配阶段**就检查 CLI 是否可用：与其领到任务后才发现
+    进程起不来，不如让 Worker 启动失败、运维立刻看到配置问题。
     """
-    if "RUN:MOCK" in settings.capabilities:
+    capabilities = {item.upper() for item in settings.capabilities}
+    run_capabilities = sorted(item for item in capabilities if item.startswith("RUN:"))
+    if "RUN:MOCK" in capabilities:
         return MockRunner(settings.mock_scenario,
                           fail_first_attempt=settings.mock_fail_first_attempt)
-    if any(capability.upper().startswith("RUN:") for capability in settings.capabilities):
+    if any(item in ("RUN:CLI", "RUN:CODEX", "RUN:CUSTOM") for item in run_capabilities):
+        import shutil
+
+        executable = shutil.which(settings.runner_cli)
+        if not executable:
+            raise RuntimeError(
+                f"声明了真实 Runner 能力，但未找到可执行文件 {settings.runner_cli!r}；"
+                "请安装该 CLI 或改用 RUN:MOCK")
+        runner = CliCodingAgentRunner(
+            executable=settings.runner_cli,
+            workdir_root=settings.runner_workdir_root or None,
+            allowed_tools=settings.runner_cli_allowed_tools or None,
+            max_turns=settings.runner_cli_max_turns,
+        )
+        version = runner.cli_version()
+        log.info("真实 Runner 已装配: executable=%s version=%s", executable, version)
+        return runner
+    if run_capabilities:
         raise RuntimeError(f"没有可用的 Runner 实现，capabilities={settings.capabilities}")
     return None
 
@@ -41,7 +65,7 @@ def build_evaluators(settings: Settings) -> dict[str, Evaluator]:
     """把 ``EVAL:<key>`` 能力解析成算子实现；未实现的 key 让启动失败。"""
     keys = [capability.split(":", 1)[1] for capability in settings.capabilities
             if capability.upper().startswith("EVAL:")]
-    return registry.resolve(keys) if keys else {}
+    return registry.resolve(keys, settings) if keys else {}
 
 
 class WorkerRuntime:
@@ -91,12 +115,36 @@ class WorkerRuntime:
             self._stop.wait(self.settings.poll_interval)
 
     def status(self) -> dict[str, Any]:
+        runner_detail: dict[str, Any] = {}
+        if self.runner is not None:
+            runner_detail = {"type": getattr(self.runner, "name", None),
+                             "scenario": getattr(self.runner, "scenario", None)}
+            if isinstance(self.runner, CliCodingAgentRunner):
+                # 如实报告真实执行器身份：CLI 名称与版本可核对，不含糊成"某种 runner"
+                runner_detail.update({"type": "CLI", "executable": self.settings.runner_cli,
+                                      "cliVersion": self.runner.cli_version(),
+                                      "realExecution": True})
+            else:
+                runner_detail["realExecution"] = False
+
+        judge_detail: dict[str, Any] = {}
+        judge = self.evaluators.get("judge.rubric")
+        if isinstance(judge, JudgeRubric):
+            describe = getattr(judge.client, "describe", None)
+            judge_detail = {"provider": judge.client.name,
+                            "rubrics": sorted(judge.rubrics),
+                            "realInvocation": judge.client.name != "stub"}
+            if callable(describe):
+                judge_detail.update(describe())
+
         return {
             "workerId": self.settings.worker_id,
             "capabilities": self.settings.capabilities,
-            "runner": getattr(self.runner, "name", None),
-            "scenario": getattr(self.runner, "scenario", None),
+            "runner": runner_detail.get("type"),
+            "runnerDetail": runner_detail,
+            "scenario": runner_detail.get("scenario"),
             "evaluators": sorted(self.evaluators),
+            "judge": judge_detail,
             "backgroundRunning": self._thread is not None and self._thread.is_alive(),
             "lastSummary": self.last_summary,
         }
