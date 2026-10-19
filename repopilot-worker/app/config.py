@@ -50,6 +50,31 @@ class Settings(BaseSettings):
         default="http://127.0.0.1:8080",
         validation_alias=AliasChoices("WORKER_SERVER_BASE_URL", "SERVER_BASE_URL"),
     )
+    # Worker 内部接口的 Bearer 凭证；与 Java 服务读取同一个环境变量名。
+    # repr=False：避免异常日志或调试输出把凭证带出来。
+    worker_token: str = Field(default="", validation_alias="REPOPILOT_WORKER_TOKEN", repr=False)
+
+    # ---- 执行协议 ----
+    worker_id: str = Field(default="mock-worker-1", validation_alias="WORKER_ID")
+    capabilities_raw: str = Field(default="RUN:MOCK", validation_alias="WORKER_CAPABILITIES")
+    max_tasks: int = Field(default=1, validation_alias="WORKER_MAX_TASKS")
+    heartbeat_interval: float = Field(default=15.0, validation_alias="WORKER_HEARTBEAT_INTERVAL")
+    poll_interval: float = Field(default=1.0, validation_alias="WORKER_POLL_INTERVAL")
+    # 是否在进程启动后自动开始轮询；默认关闭，演示/测试用 /worker/run-once 显式触发。
+    autostart: bool = Field(default=False, validation_alias="WORKER_AUTOSTART")
+
+    # ---- Mock Runner ----
+    mock_scenario: str = Field(default="SUCCESS", validation_alias="WORKER_MOCK_SCENARIO")
+    mock_fail_first_attempt: bool = Field(
+        default=False, validation_alias="WORKER_MOCK_FAIL_FIRST_ATTEMPT")
+    # true 时把 output 作为 Artifact 上传，完成回调只带 outputArtifactId；
+    # false 时内联 output。两条路径都被 TASK-004 支持，默认内联便于演示。
+    upload_artifact: bool = Field(default=False, validation_alias="WORKER_UPLOAD_ARTIFACT")
+
+    @property
+    def capabilities(self) -> list[str]:
+        """能力字符串列表；空串被忽略。"""
+        return [item.strip() for item in self.capabilities_raw.split(",") if item.strip()]
 
     # ---- 基础设施登记项（V1 不建立连接，供后续任务使用）----
     mysql_host: str = Field(default="127.0.0.1", validation_alias="MYSQL_HOST")
