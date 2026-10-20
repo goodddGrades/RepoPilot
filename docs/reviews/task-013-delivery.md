@@ -332,8 +332,8 @@ bash tools/demo-task-013.sh   →   EXIT=0   全部 9 个场景通过
 | 分支 | `develop` |
 | 远端 | `origin https://github.com/goodddGrades/RepoPilot.git` |
 | 远端基线 | `d0010c4` `docs(task-007): 补记 CI 重跑结果与基础设施抖动说明` |
-| 本地提交（本任务） | **`a99b00c`** `feat(messaging): RabbitMQ 四层拓扑、真实消费接入、死信重放与保留策略（TASK-013）`（48 个文件，+11044 −81）<br>**`36efd03`** `docs(task-013): 交付报告补记提交 ID 与演示最终的保留期数字`<br>**`b3f9f2d`** `docs(task-013): 验收轮更正 readiness 跳过原因与长任务占用消费者的描述`<br>外加一个紧随其后的报告更新提交（记录验收轮数字与 Git 基线） |
-| 待推送范围 | **`origin/develop..HEAD` 共 12 个提交**（`git rev-list --left-right --count origin/develop...HEAD` = `0 12`，远端无落后，可 fast-forward）：<br>`36efd03` `a99b00c` `8a3c8c0` `879348b` `6435553` `9b8cb7a` `02f0f1c` `7b3c7ac` `71428d6` `d57d1c3` + 验收轮两个文档提交<br>覆盖 TASK-008 ~ TASK-013，**不是只有本任务两个提交** |
+| 本地提交（本任务） | **`1296eed`** `fix(worker): 消息回调不再同步跑完 Agent Run，改为唤醒队列交给执行线程`（12 个文件，+783 −108）<br>**`a99b00c`** `feat(messaging): RabbitMQ 四层拓扑、真实消费接入、死信重放与保留策略（TASK-013）`（48 个文件，+11044 −81）<br>**`36efd03`** `docs(task-013): 交付报告补记提交 ID 与演示最终的保留期数字`<br>**`b3f9f2d`** `docs(task-013): 验收轮更正 readiness 跳过原因与长任务占用消费者的描述`<br>**`32b5260`** `docs(task-013): 记录最终验收轮的真实数字、跳过项处置与未验证项` |
+| 待推送范围 | **`origin/develop..HEAD` 共 13 个提交**（`git rev-list --left-right --count origin/develop...HEAD` = `0 13`，远端无落后，可 fast-forward）：<br>`1296eed`（执行模型修复）`32b5260` `b3f9f2d` `36efd03` `a99b00c` `8a3c8c0` `879348b` `6435553` `9b8cb7a` `02f0f1c` `7b3c7ac` `71428d6` `d57d1c3`<br>覆盖 TASK-008 ~ TASK-013，**不是只有本任务两个提交** |
 | 推送 | **未 push**。`AGENTS.md` 规定"push 需逐次显式授权"，本任务未获得授权 |
 | GitHub Actions | **未运行**（未 push，无法触发）；本地等价检查已全部执行 |
 
@@ -472,3 +472,16 @@ fixture 的 teardown 在删完之后调用 `tools/task013_broker.py declare-topo
 
 验证：迁移测试 10/10 通过后立刻跑执行模型测试 7/7 通过（修复前必红），
 再跑 Worker 全量仍是 239 passed。
+
+### 9.6 交付状态（停在 push 前）
+
+| 项 | 实际值 |
+| --- | --- |
+| 分支 / 远端 | `develop` → `origin https://github.com/goodddGrades/RepoPilot.git` |
+| 远端基线 | `d0010c4` |
+| 待推送 | **13 个提交**，`git rev-list --left-right --count origin/develop...HEAD` = `0 13`（远端无领先，可 fast-forward） |
+| 工作区 | **干净**（`git status --short` 无输出） |
+| 敏感信息 | 本轮新增行仅 `"RABBIT_PASSWORD": PASSWORD`（透传既有环境变量常量），无真实凭据；真实 `.env` 被 `.gitignore:9` 忽略；被跟踪的只有 `.env.example` 与 `repopilot-web/.env.development`（纯开发地址） |
+| 构建产物 | 无 `target/`、`node_modules/`、`dist/`、`__pycache__/`、`.venv/` 被跟踪 |
+| CI | **未运行**（未 push）；推送后需记录 Run ID 与各 Job 结果 |
+| 推送授权 | **尚未获得**，等待显式授权后仅执行 fast-forward 到 `origin/develop` |
