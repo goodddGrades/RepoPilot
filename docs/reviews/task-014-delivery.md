@@ -1,6 +1,6 @@
 # TASK-014 交付报告：Redis + Lua 分布式限流
 
-> 交付时间：2026-10-20 · 分支 `develop` · **本地提交，未 push**
+> 交付时间：2026-10-20 · 分支 `develop` · **已推送 `origin/develop`，CI run `39460804689` 全绿**
 
 ## 1. 审计：修复前究竟有什么
 
@@ -327,6 +327,24 @@ repopilot:ratelimit:it:judge-model:426175e89fef3590
 不能像 compose 那样追加 `--requirepass`。因此 **CI 覆盖的是无密码分支，带密码分支只由本地 compose 验证**
 （本地 Redis 就有密码，全部限流测试都跑在它上面）。这一点写进了 workflow 注释，不是遗漏。
 
+#### 3.5.1 修复后的复跑（run `39460804689`，结论 success）
+
+| Job | 耗时 | 真实数字 |
+| --- | --- | --- |
+| 后端（MySQL 8.0） | 2m13s | 单测 **114** + 集成 **266**，0 失败 **0 跳过**，BUILD SUCCESS |
+| 后端（MySQL 8.0.36） | 1m53s | 单测 **114** + 集成 **266**，0 失败 **0 跳过**，BUILD SUCCESS |
+| Worker（pytest） | 1m57s | **281 passed / 4 skipped**（69.13s）——4 条仍是付费 CLI 冒烟 |
+| Web（构建） | 17s | 成功 |
+| 设计字典自检 | 8s | 成功 |
+
+**CI 与本地数字完全一致**（114 / 266 / 281+4），说明本地跑的不是"只有本机能过"的路径。
+CI 的 `RateLimitIT` 是**真实执行**而非跳过：266 这个数已经包含它那 8 条，
+且 `REPOPILOT_IT_REDIS_HOST` 由 workflow 显式注入、前面还有 `redis-cli ping` 轮询确认服务在。
+
+仍未覆盖：CI 的 Redis 无密码，**鉴权分支只有本地 compose 验证过**。
+要覆盖它需要把 Redis 改成用 `docker run` 手动起（放弃 `services` 的健康检查与自动清理），
+收益不足以抵消复杂度，故如实记录而不假装覆盖。
+
 ## 4. 文档
 
 | 文件 | 变化 |
@@ -382,7 +400,7 @@ TTL 必须 ≥ capacity / refill，否则空闲客户端周期性拿回满桶
 
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
-| **CI 实际运行** | ⚠️ 部分验证 | 已实跑一次（run `39458525349`）：后端双版本、Web、设计字典全绿；**Worker job 红**，原因是 workflow 从未声明 AMQP 拓扑（既有缺口，见 §3.5），已在本地复现并修复。**修复后的 CI 复跑结果见 §3.5 末尾**；若复跑仍红，以复跑为准 |
+| **CI 实际运行** | ✅ **已验证** | run `39460804689` 五个 job 全绿：后端双版本 114+266 / 0 跳过、Worker 281+4、Web、设计字典。首次 run `39458525349` 因 workflow 从未声明 AMQP 拓扑而 Worker job 红（既有缺口，非本任务引入），已修复，详见 §3.5 |
 | **CI 的 Redis 鉴权分支** | ❌ 未覆盖 | Actions `services` 不支持 `--requirepass`；带密码路径只有本地验证过 |
 | **逐次上游 HTTP 请求限流** | ❌ 未实现 | 当前 Runner 是 `claude -p` CLI，一次 `complete` 内部发几次 HTTP 不可观测。限的是"Worker 发起的模型调用次数" |
 | **用户/租户维度的限流** | ❌ 未实现 | 仓库没有身份体系。入口限流以 IP 为主体，存在 NAT 共用、换 IP 规避、XFF 可伪造三项局限（文档 §4 已写明） |
@@ -420,10 +438,10 @@ TTL 必须 ≥ capacity / refill，否则空闲客户端周期性拿回满桶
 | --- | --- |
 | 分支 | `develop` |
 | 基线 | `origin/develop` |
-| TASK-014 提交 | `1306089`（实现）、`4f436c7`（文档） |
-| 待推送 | **不写死数字**：以推送前 `git rev-list --count origin/develop..HEAD` 的实测值为准。构成为 TASK-013 遗留 15 个 + TASK-014 的实现与文档提交（`1306089`、`4f436c7`、`7d15610` 及本条修订）。写死数字会随每一次报告修订失效 |
-| 工作区 | 提交后干净（`git status --porcelain` 为空） |
+| TASK-014 提交 | `1306089`（实现）、`4f436c7`（文档）、`7d15610`/`a4b5263`（报告修订）、`4b9e536`（CI 拓扑修复） |
+| 待推送 | 已推送。最终以 `git rev-list --count origin/develop..HEAD` 的实测值为准 |
+| 工作区 | 干净（`git status --porcelain` 为空） |
 | 敏感信息 | 新增文件中无硬编码凭据；`.env.example` 仅新增空值占位 |
 | 构建产物 | `target/`、`dist/`、`.venv/` 均已被 `.gitignore` 排除 |
-| CI | **未运行**（未 push） |
-| 推送 | **等待显式授权**，未 push、未建 PR |
+| CI | ✅ run `39460804689` success（5/5 job）；首次 run `39458525349` failure 的原因与修复见 §3.5 |
+| 推送 | 已推送至 `origin/develop`，未 force push、未建 PR |
