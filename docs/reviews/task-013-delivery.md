@@ -303,7 +303,7 @@ bash tools/demo-task-013.sh   →   EXIT=0   全部 9 个场景通过
 | --- | --- |
 | 分支 | `develop` |
 | 远端 | `origin https://github.com/goodddGrades/RepoPilot.git` |
-| 本地提交 | 见本次提交（`feat(messaging): …TASK-013`） |
+| 本地提交 | **`a99b00c`** `feat(messaging): RabbitMQ 四层拓扑、真实消费接入、死信重放与保留策略（TASK-013）`（48 个文件，+11044 −81） |
 | 推送 | **未 push**。`AGENTS.md` 第 205-206 行规定"push 需逐次显式授权"，本任务未获得授权 |
 | GitHub Actions | **未运行**（未 push，无法触发）；本地等价检查已全部执行 |
 
