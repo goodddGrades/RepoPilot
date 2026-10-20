@@ -386,7 +386,7 @@ TTL 必须 ≥ capacity / refill，否则空闲客户端周期性拿回满桶
 | 分支 | `develop` |
 | 基线 | `origin/develop` |
 | TASK-014 提交 | `1306089`（实现）、`4f436c7`（文档） |
-| 待推送 | 截至 `4f436c7` 共 **17** 个提交（含 TASK-013 遗留的 15 个）。本报告若再补一次提交会变成 18，**最终数量以推送前那次 `rev-list` 为准** |
+| 待推送 | **不写死数字**：以推送前 `git rev-list --count origin/develop..HEAD` 的实测值为准。构成为 TASK-013 遗留 15 个 + TASK-014 的实现与文档提交（`1306089`、`4f436c7`、`7d15610` 及本条修订）。写死数字会随每一次报告修订失效 |
 | 工作区 | 提交后干净（`git status --porcelain` 为空） |
 | 敏感信息 | 新增文件中无硬编码凭据；`.env.example` 仅新增空值占位 |
 | 构建产物 | `target/`、`dist/`、`.venv/` 均已被 `.gitignore` 排除 |
