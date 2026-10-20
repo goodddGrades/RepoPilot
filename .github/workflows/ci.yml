@@ -267,6 +267,21 @@ jobs:
             sleep 2
           done
           echo "Redis 未就绪" >&2; exit 1
+      - name: 声明 AMQP 拓扑
+        # Worker 的 broker 用例**假定拓扑已存在**：本地跑时它由后端启动
+        # （RabbitTopologyDeclarer）或演示脚本先声明好了，所以这个前提
+        # 一直是隐性的。CI 的 service 容器是全新且空的，缺这一步会得到
+        # 22 条 `NOT_FOUND - no queue 'repopilot.evaluation.ready' / no exchange
+        # 'repopilot.events.dlx'`，看起来像消费逻辑坏了，其实是环境没准备好。
+        #
+        # 用仓库里的声明工具而不是在 workflow 里手写一遍队列参数：
+        # 参数的唯一真相在 tools/task013_broker.py，复制一份迟早漂移。
+        run: python tools/task013_broker.py declare-topology
+        env:
+          RABBIT_HOST: 127.0.0.1
+          RABBIT_PORT: '5672'
+          RABBIT_USER: repopilot
+          RABBIT_PASSWORD: repopilot_rabbit_only
       - name: 跑测试（含真实 broker 的退避/死信链路）
         run: python -m pytest -q
         working-directory: repopilot-worker

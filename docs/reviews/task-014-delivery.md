@@ -288,6 +288,41 @@ repopilot:ratelimit:it:judge-model:426175e89fef3590
 `.github/workflows/ci.yml` 两个 job 各加了 `redis:7.2.5` service + 「等待 Redis 可连接」轮询步骤
 （`docker exec ... redis-cli ping | grep -q PONG`）+ 注入 `REPOPILOT_IT_REDIS_*` / `WORKER_TEST_REDIS_*`。
 
+**第一次实跑（run `39458525349`）结果是 failure，原因与限流无关。**
+
+| Job | 结果 |
+| --- | --- |
+| Web（构建） | ✅ 24s |
+| 后端（MySQL 8.0） | ✅ 2m25s |
+| 后端（MySQL 8.0.36） | ✅ 2m7s |
+| 设计字典自检 | ✅ 9s |
+| **Worker（pytest）** | ❌ `14 failed, 259 passed, 4 skipped, 8 errors` |
+
+失败全部是 `NOT_FOUND - no queue 'repopilot.evaluation.ready'` /
+`no exchange 'repopilot.events.dlx'` / `no exchange 'repopilot.events'`。
+
+**根因**：Worker 的 broker 用例**假定 AMQP 拓扑已存在**——本地跑时它由后端启动
+（`RabbitTopologyDeclarer`）或演示脚本先声明好了，这个前提一直是隐性的。
+而 CI 的 service 容器是全新的空 broker，workflow 里**从来没有声明拓扑的步骤**。
+
+**为什么现在才暴露**：上一条绿灯 CI（run `39274690904`，2026-10-19）的 Worker job 只跑了
+**92 个用例、1.33 秒**，那时 RabbitMQ 测试套件还不存在。TASK-011~013 的 15 个提交
+**从未在 CI 跑过**——本任务这次 push 是它们第一次进 CI。也就是说这是一个**既有缺口**，
+不是 TASK-014 引入的回归。
+
+**本地复现与修复验证**（不靠推测）：
+
+| 步骤 | 命令 | 结果 |
+| --- | --- | --- |
+| 1. 清空本地 broker 拓扑 | 删除 8 个队列 + 4 个交换机 | — |
+| 2. 跑消费者用例 | `pytest tests/test_consumer_rabbit.py tests/test_consumer_execution.py` | **14 failed, 8 errors**（与 CI 完全一致） |
+| 3. 声明拓扑 | `tools/task013_broker.py declare-topology` | `ok` |
+| 4. 同一批用例重跑 | 同上 | **26 passed** |
+
+**修复**：在 CI 的 worker job 里加一步 `python tools/task013_broker.py declare-topology`
+（位置在 `pip install` 之后、`pytest` 之前）。用仓库里的声明工具而不是在 workflow 里手写
+一遍队列参数——参数的唯一真相在 `tools/task013_broker.py`，复制一份迟早漂移。
+
 **为什么 CI 的 Redis 没有密码**：GitHub Actions 的 `services` 只接受 `docker create` 级别的参数，
 不能像 compose 那样追加 `--requirepass`。因此 **CI 覆盖的是无密码分支，带密码分支只由本地 compose 验证**
 （本地 Redis 就有密码，全部限流测试都跑在它上面）。这一点写进了 workflow 注释，不是遗漏。
@@ -347,7 +382,7 @@ TTL 必须 ≥ capacity / refill，否则空闲客户端周期性拿回满桶
 
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
-| **CI 实际运行** | ❌ **未验证** | 未 push，Actions 未触发。本地全绿不等于 CI 绿（CI 用无密码 Redis，本地用带密码的 compose） |
+| **CI 实际运行** | ⚠️ 部分验证 | 已实跑一次（run `39458525349`）：后端双版本、Web、设计字典全绿；**Worker job 红**，原因是 workflow 从未声明 AMQP 拓扑（既有缺口，见 §3.5），已在本地复现并修复。**修复后的 CI 复跑结果见 §3.5 末尾**；若复跑仍红，以复跑为准 |
 | **CI 的 Redis 鉴权分支** | ❌ 未覆盖 | Actions `services` 不支持 `--requirepass`；带密码路径只有本地验证过 |
 | **逐次上游 HTTP 请求限流** | ❌ 未实现 | 当前 Runner 是 `claude -p` CLI，一次 `complete` 内部发几次 HTTP 不可观测。限的是"Worker 发起的模型调用次数" |
 | **用户/租户维度的限流** | ❌ 未实现 | 仓库没有身份体系。入口限流以 IP 为主体，存在 NAT 共用、换 IP 规避、XFF 可伪造三项局限（文档 §4 已写明） |
