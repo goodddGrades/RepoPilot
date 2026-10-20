@@ -234,9 +234,26 @@ repopilot.run.ready（深度 1，routing key 复原为 run.ready）
 
 | 项目 | 数字 |
 | --- | --- |
-| 单元测试（surefire） | **75 通过**，0 失败 0 错误 |
-| 集成测试（failsafe） | **258 通过**，0 失败 0 错误，1 skipped |
+| 单元测试（surefire） | **75 通过**，0 失败 0 错误 **0 跳过** |
+| 集成测试（failsafe） | **258 通过**，0 失败 0 错误 **0 跳过** |
 | 合计 | **333 个用例**，BUILD SUCCESS |
+
+最终验收命令（与 `ci.yml` 的环境变量一致）：
+
+```bash
+REPOPILOT_IT_REQUIRE_ALL_UP=true \
+REPOPILOT_IT_DB_HOST=127.0.0.1 REPOPILOT_IT_DB_PORT=13306 \
+REPOPILOT_IT_DB_NAME=repopilot_it REPOPILOT_IT_DB_USER=repopilot \
+REPOPILOT_IT_DB_PASSWORD=repopilot_it_only \
+REPOPILOT_IT_RABBIT_HOST=127.0.0.1 REPOPILOT_IT_RABBIT_USER=repopilot \
+REPOPILOT_IT_RABBIT_PASSWORD=repopilot_dev_pwd \
+./mvnw -B -o verify -DargLine="-Xmx1280m -XX:MaxMetaspaceSize=512m -Xss512k"
+```
+
+> **`-DargLine` 是本机内存限制，不是代码配置**：本机 16 GB 物理内存在首次验收时只剩 382 MB，
+> JVM 报 `Native memory allocation (malloc) failed`（`hs_err` 已确认），fork 崩溃 ——
+> 这是环境资源问题，不是测试失败。给测试 JVM 设 1.25 GB 堆后同一套用例全绿。
+> CI 的 `ubuntu-latest` 不需要该参数。
 
 TASK-013 新增/改写的集成测试：
 
@@ -247,15 +264,20 @@ TASK-013 新增/改写的集成测试：
 | `MessagingRecoveryIT` | 3 | 消息链路 + 租约过期 + 任务恢复串起来 |
 | `MessagingReliabilityIT`（改） | 13 | 发布确认、返回、不可路由、毒消息重试预算、Inbox 幂等与冲突 |
 
-> 1 skipped 是 `ApiHealthIT` 里依赖外网的健康探测用例，与本任务无关。
+> **原"1 skipped"已消除**：那条是 `ApiHealthIT.readinessShouldBeUpWhenEveryDependencyIsAvailable`，
+> 由 `@EnabledIfEnvironmentVariable(named = "REPOPILOT_IT_REQUIRE_ALL_UP", matches = "true")` 门控，
+> **不是"依赖外网"**（早期报告写错了）。本机 MySQL 8.0.22 与 RabbitMQ 3.13.7 都在，
+> 补上该变量后用例真实执行并通过，`ApiHealthIT` 4/4、全量 0 跳过。
 
 ### Worker（Python 3.13 + pika 1.3.2 + 真实 broker）
 
 ```
-232 passed, 4 skipped in 142.99s
+232 passed, 4 skipped, 9 warnings in 162.58s (0:02:42)
 ```
 
-4 个 skipped 全部是 `test_cli_runner_smoke.py` 里"需显式开启、会产生真实费用"的真实 CLI 冒烟，属预期跳过。
+4 条 skipped 全部是 `test_cli_runner_smoke.py` 里"需显式开启、会产生真实费用"的真实 CLI 冒烟：
+**本轮按未执行处理，不计入通过数**。除这 4 条外，Worker 侧全部用例（含真实 broker 的
+`test_consumer_rabbit.py` / `test_recovery_rabbit.py`）都实际执行并通过。
 新增测试文件：`test_consumer_protocol.py`（协议与统计上报）、`test_consumer_rabbit.py`（真实 broker 消费）、
 `test_recovery_rabbit.py`（7 个故障恢复）、`test_migrate_retry_topology.py`（10 个迁移工具）。
 
@@ -303,8 +325,10 @@ bash tools/demo-task-013.sh   →   EXIT=0   全部 9 个场景通过
 | --- | --- |
 | 分支 | `develop` |
 | 远端 | `origin https://github.com/goodddGrades/RepoPilot.git` |
-| 本地提交 | **`a99b00c`** `feat(messaging): RabbitMQ 四层拓扑、真实消费接入、死信重放与保留策略（TASK-013）`（48 个文件，+11044 −81） |
-| 推送 | **未 push**。`AGENTS.md` 第 205-206 行规定"push 需逐次显式授权"，本任务未获得授权 |
+| 远端基线 | `d0010c4` `docs(task-007): 补记 CI 重跑结果与基础设施抖动说明` |
+| 本地提交（本任务） | **`a99b00c`** `feat(messaging): RabbitMQ 四层拓扑、真实消费接入、死信重放与保留策略（TASK-013）`（48 个文件，+11044 −81）<br>**`36efd03`** `docs(task-013): 交付报告补记提交 ID 与演示最终的保留期数字` |
+| 待推送范围 | **`origin/develop..HEAD` 共 10 个提交**（`git rev-list --left-right --count` = `0 10`，远端无落后，可 fast-forward）：<br>`36efd03` `a99b00c` `8a3c8c0` `879348b` `6435553` `9b8cb7a` `02f0f1c` `7b3c7ac` `71428d6` `d57d1c3`<br>覆盖 TASK-008 ~ TASK-013，**不是只有本任务两个提交** |
+| 推送 | **未 push**。`AGENTS.md` 规定"push 需逐次显式授权"，本任务未获得授权 |
 | GitHub Actions | **未运行**（未 push，无法触发）；本地等价检查已全部执行 |
 
 CI 工作流已更新（`.github/workflows/ci.yml`）：
@@ -324,6 +348,7 @@ CI 工作流已更新（`.github/workflows/ci.yml`）：
 | DLQ 的独立保留策略 | ❌ 未实现 | DLQ 消息在 broker 里，不受 `RetentionService` 管辖；积压需人工或独立策略 |
 | 消费延迟指标的口径 | ⚠️ 近似 | 用"发布确认 → Inbox 登记"的时间差推算，**不是**端到端真实处理耗时；且只统计最近 100 条已发布事件 |
 | 消费统计的上报可靠性 | ⚠️ 下界 | Worker 主动上报、不保证送达；失败会在下一轮重报，但进程被杀时未上报的增量会丢失。后端计数是**下界**，精确对账看 `inbox_events` 行数 |
+| **长任务占住消费者线程** | ⚠️ 延迟 | `on_wakeup` 是 `runtime.run_once()`，在 AMQP 回调线程里**同步**跑完 claim → 执行 → 回传 → ACK。任务执行期间不取新消息，**再发布队列一并暂停**，重试回流被推迟到任务结束。不丢消息、不重复执行，但严格意义上不满足"长任务不占用消费者"。改法是把执行移到独立线程、回调只做登记 + 置位唤醒 + ACK；验收轮未改动执行模型，已写入 `docs/modules/messaging-reliability.md` §11 |
 | 迁移工具的真实积压演练 | ⚠️ 部分 | 10 个用例在真实 broker 上验证过（含"拒绝删除非空队列"）；**未在真实生产积压上执行** |
 | 跨机房/多集群 | ❌ 未验证 | DLX 与业务交换机同 vhost；跨集群需 federation，语义要重新验证 |
 | 前端 | ➖ 未改动 | 本任务不涉及 UI |
