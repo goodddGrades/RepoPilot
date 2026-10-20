@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     poll_interval: float = Field(default=1.0, validation_alias="WORKER_POLL_INTERVAL")
     # 是否在进程启动后自动开始轮询；默认关闭，演示/测试用 /worker/run-once 显式触发。
     autostart: bool = Field(default=False, validation_alias="WORKER_AUTOSTART")
+    # 优雅关闭时等待"正在执行的那一轮"结束的上限（秒）。
+    #
+    # 关闭流程是"先停消费 → 再等执行线程"，执行线程只在两轮之间检查停止标志，
+    # 所以正在跑的 Run 不会被腰斩；等不到就放弃，让租约到期后由回收器接手。
+    # 设 0 表示不等待（测试用）。
+    shutdown_timeout: float = Field(default=30.0, validation_alias="WORKER_SHUTDOWN_TIMEOUT")
 
     # ---- Mock Runner ----
     mock_scenario: str = Field(default="SUCCESS", validation_alias="WORKER_MOCK_SCENARIO")

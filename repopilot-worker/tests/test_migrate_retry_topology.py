@@ -34,6 +34,7 @@ PASSWORD = os.environ.get("WORKER_TEST_RABBIT_PASSWORD", "repopilot_dev_pwd")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATE_TOOL = REPO_ROOT / "tools" / "migrate_retry_topology.py"
+BROKER_TOOL = REPO_ROOT / "tools" / "task013_broker.py"
 
 V2_EXCHANGE = "repopilot.events.retry.v2"
 LEGACY_EXCHANGE = "repopilot.events.retry"
@@ -85,7 +86,13 @@ def _declare_legacy_topology() -> None:
         conn.close()
 
 
-def _cleanup_legacy() -> None:
+def _delete_legacy_entities() -> None:
+    """只删旧拓扑实体，**不恢复**当前拓扑。
+
+    单独拆出来是给 ``test_drain_tolerates_absent_legacy_topology`` 用的：
+    它需要"旧队列真的不存在"这个前置状态。而 fixture 的 teardown 必须
+    在删完之后把当前拓扑恢复回去（见 ``_cleanup_legacy``）。
+    """
     conn = _conn()
     try:
         ch = conn.channel()
@@ -101,6 +108,41 @@ def _cleanup_legacy() -> None:
             pass
     finally:
         conn.close()
+
+
+def _cleanup_legacy() -> None:
+    _delete_legacy_entities()
+    _restore_current_topology()
+
+
+def _restore_current_topology() -> None:
+    """把共享 broker 恢复成**当前拓扑**。
+
+    旧 headers 拓扑与当前拓扑**共用** ``repopilot.retry.wait.tN`` 这组队列名
+    （迁移就是把同名队列里的消息搬到新交换机下），所以清理旧拓扑时会把
+    真实队列一起删掉。
+
+    不恢复的话，后续任何依赖这套队列的用例或演示都会看到"队列不存在"，
+    而失败点看起来与迁移工具毫无关系——本次验收就踩到了：
+    Worker 全量跑完后 ``repopilot.retry.wait.t1`` 消失，
+    紧接着的单条重试用例报 ``NOT_FOUND``。
+
+    用工具声明而不是在测试里重写一遍队列参数：参数的唯一真相在
+    ``tools/task013_broker.py``，复制一份迟早会漂移。
+    """
+    env = dict(os.environ)
+    env.update({
+        "RABBIT_HOST": HOST,
+        "RABBIT_PORT": str(PORT),
+        "RABBIT_USER": USER,
+        "RABBIT_PASSWORD": PASSWORD,
+    })
+    proc = subprocess.run([sys.executable, str(BROKER_TOOL), "declare-topology"],
+                          env=env, capture_output=True, text=True, timeout=120, check=False)
+    if proc.returncode != 0:
+        # 恢复失败不掩盖测试结论，但必须让人看到：后续用例会因此莫名其妙地失败。
+        print(f"[警告] 恢复当前拓扑失败（exit={proc.returncode}）："
+              f"{proc.stdout[-500:]}{proc.stderr[-500:]}", file=sys.stderr)
 
 
 def _publish_legacy(tier: int, event_id: str, original_rk: str = "run.ready") -> None:
@@ -316,7 +358,7 @@ def test_drain_tolerates_absent_legacy_topology(legacy_topology):
 
     迁移工具会被反复执行；"已经迁完了"是正常状态，不是故障。
     """
-    _cleanup_legacy()
+    _delete_legacy_entities()
     code, out, _ = _run_tool("--phase", "drain", "--yes")
     assert code == 0, out
     assert "不存在，跳过" in out

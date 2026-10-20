@@ -139,7 +139,7 @@ def test_message_is_acked_and_removed_from_queue(queue: str):
     这是替身给不出的断言——它只能验证"调用了 ack"，
     验证不了"broker 真的把它移走了"。
     """
-    consumer = RabbitConsumer(settings(queue), lambda: {"claimed": 1})
+    consumer = RabbitConsumer(settings(queue), lambda: None)
     publish(envelope_bytes())
     time.sleep(0.5)
     assert queue_depth(queue) == 1
@@ -148,13 +148,13 @@ def test_message_is_acked_and_removed_from_queue(queue: str):
 
     assert result["acked"] == 1
     assert result["empty"] is False
-    assert result["claimed"] == 1
+    assert result["wakeups"] == 1
     time.sleep(0.3)
     assert queue_depth(queue) == 0, "ACK 之后消息必须真的离开队列"
 
 
 def test_empty_queue_reports_empty(queue: str):
-    consumer = RabbitConsumer(settings(queue), lambda: {"claimed": 0})
+    consumer = RabbitConsumer(settings(queue), lambda: None)
     result = consumer.drain_once()
     assert result["empty"] is True
     assert result["acked"] == 0
@@ -167,7 +167,7 @@ def test_duplicate_delivery_acks_each_time_without_error(queue: str):
     如果它导致进死信，死信队列会被正常重投塞满。
     """
     body = envelope_bytes()
-    consumer = RabbitConsumer(settings(queue), lambda: {"claimed": 0})
+    consumer = RabbitConsumer(settings(queue), lambda: None)
 
     publish(body)
     time.sleep(0.4)
@@ -221,7 +221,7 @@ def test_contract_violation_reaches_dead_letter_queue(queue: str):
     日志显示"已拒绝"、计数显示 deadLettered=1，而 DLQ 里什么都没有。
     所以这个断言不能只检查 summary，必须检查 DLQ 的真实深度。
     """
-    consumer = RabbitConsumer(settings(queue), lambda: {"claimed": 0})
+    consumer = RabbitConsumer(settings(queue), lambda: None)
 
     # 场景 1：非法 JSON
     publish(b"{not json at all")
@@ -242,7 +242,7 @@ def test_contract_violation_reaches_dead_letter_queue(queue: str):
 
 def test_dead_letter_preserves_original_envelope_and_death_reason(queue: str):
     """死信必须保留原始信封与 x-death 元数据，否则无法排查。"""
-    consumer = RabbitConsumer(settings(queue), lambda: {"claimed": 0})
+    consumer = RabbitConsumer(settings(queue), lambda: None)
     publish(b'{"broken":')
     time.sleep(0.4)
     consumer.drain_once()
@@ -268,7 +268,7 @@ def test_dead_letter_preserves_original_envelope_and_death_reason(queue: str):
 
 def test_unknown_schema_version_goes_to_dead_letter_not_infinite_retry(queue: str):
     """未知信封版本重投多少次都不会变合法，必须一次性隔离。"""
-    consumer = RabbitConsumer(settings(queue), lambda: {"claimed": 0})
+    consumer = RabbitConsumer(settings(queue), lambda: None)
     body = json.dumps({
         "schemaVersion": 99,
         "eventId": "01M5BZZZZZZZZZZZZZZZZZZZZZ",
@@ -285,7 +285,7 @@ def test_unknown_schema_version_goes_to_dead_letter_not_infinite_retry(queue: st
 
 def test_valid_messages_never_reach_dead_letter_queue(queue: str):
     """反向断言：正常消息绝不能进死信。"""
-    consumer = RabbitConsumer(settings(queue), lambda: {"claimed": 2})
+    consumer = RabbitConsumer(settings(queue), lambda: None)
     publish(envelope_bytes())
     time.sleep(0.4)
     consumer.drain_once()
@@ -603,7 +603,7 @@ def test_republish_restores_routing_key_and_returns_to_business_queue(retry_topo
     finally:
         conn.close()
 
-    consumer = RabbitConsumer(settings(retry_topology), lambda: {"claimed": 1})
+    consumer = RabbitConsumer(settings(retry_topology), lambda: None)
     result = consumer.republish_once()
 
     assert result["republished"] == 1
@@ -643,7 +643,7 @@ def test_republish_without_original_key_does_not_guess(retry_topology: str):
     finally:
         conn.close()
 
-    consumer = RabbitConsumer(settings(retry_topology), lambda: {"claimed": 1})
+    consumer = RabbitConsumer(settings(retry_topology), lambda: None)
     result = consumer.republish_once()
 
     assert result["republished"] == 0, "缺原 routing key 时不该乱投"
@@ -783,7 +783,7 @@ def test_dead_letter_queue_stays_empty_after_successful_processing(queue: str):
     这是对退避重试的"副作用检查"：如果重试逻辑写错
     （比如把成功消息也发到重试交换机），DLQ 会莫名增长。
     """
-    consumer = RabbitConsumer(settings(queue), lambda: {"claimed": 1})
+    consumer = RabbitConsumer(settings(queue), lambda: None)
     publish(envelope_bytes())
     time.sleep(0.4)
     result = consumer.drain_once()

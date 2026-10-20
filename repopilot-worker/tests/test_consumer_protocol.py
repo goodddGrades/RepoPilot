@@ -163,7 +163,7 @@ def test_validate_accepts_v1():
 
 def test_valid_message_is_acked_and_triggers_wakeup():
     calls: list[int] = []
-    consumer = RabbitConsumer(make_settings(), lambda: calls.append(1) or {"claimed": 3})
+    consumer = RabbitConsumer(make_settings(), lambda: calls.append(1))
     channel = FakeChannel()
 
     summary = handle(consumer, valid_envelope(), channel)
@@ -171,13 +171,13 @@ def test_valid_message_is_acked_and_triggers_wakeup():
     assert channel.acked == [7]
     assert channel.rejected == []
     assert summary.acked == 1
-    assert summary.claimed == 3
+    assert summary.wakeups == 1
     # 关键不变式：消息本身不携带执行能力，必须经 claim 才能干活
     assert len(calls) == 1
 
 
 def test_malformed_message_goes_to_dead_letter_not_requeue():
-    consumer = RabbitConsumer(make_settings(), lambda: {"claimed": 0})
+    consumer = RabbitConsumer(make_settings(), lambda: None)
     channel = FakeChannel()
 
     summary = handle(consumer, b"garbage", channel)
@@ -196,7 +196,7 @@ def test_duplicate_delivery_is_idempotent_via_claim():
     本测试锁定的是**消费者不会因为重复投递而报错进死信**，
     否则重复投递会把队列塞满死信。
     """
-    consumer = RabbitConsumer(make_settings(), lambda: {"claimed": 0})
+    consumer = RabbitConsumer(make_settings(), lambda: None)
     for _ in range(3):
         channel = FakeChannel()
         summary = handle(consumer, valid_envelope(), channel)
@@ -342,7 +342,7 @@ def test_retry_preserves_first_failed_at_across_tiers():
 
 def test_consumer_does_not_log_payload():
     """死信日志不得输出完整载荷：信封里可能有业务数据。"""
-    consumer = RabbitConsumer(make_settings(), lambda: {"claimed": 0})
+    consumer = RabbitConsumer(make_settings(), lambda: None)
     channel = FakeChannel()
     secret = "s3cr3t-business-payload"
     summary = handle(consumer, json.dumps({"payload": secret}).encode(), channel)
@@ -367,16 +367,15 @@ def test_event_is_registered_in_inbox_before_wakeup():
         order.append("register")
         return "ACCEPTED"
 
-    def wakeup() -> dict[str, int]:
-        order.append("claim")
-        return {"claimed": 1}
+    def wakeup() -> None:
+        order.append("wakeup")
 
     consumer = RabbitConsumer(make_settings(), wakeup, register=register)
     channel = FakeChannel()
 
     summary = handle(consumer, valid_envelope(), channel)
 
-    assert order == ["register", "claim"], f"顺序错误：{order}"
+    assert order == ["register", "wakeup"], f"顺序错误：{order}"
     assert summary.duplicates == 0
 
 
@@ -390,7 +389,7 @@ def test_inbox_duplicate_still_triggers_wakeup():
     calls: list[int] = []
 
     consumer = RabbitConsumer(make_settings(),
-                              lambda: calls.append(1) or {"claimed": 0},
+                              lambda: calls.append(1),
                               register=lambda envelope: "DUPLICATE")
     channel = FakeChannel()
 
@@ -411,13 +410,13 @@ def test_inbox_registration_failure_is_retryable():
     def register(envelope: dict[str, Any]) -> str:
         raise RuntimeError("后端 503")
 
-    consumer = RabbitConsumer(make_settings(), lambda: {"claimed": 1}, register=register)
+    consumer = RabbitConsumer(make_settings(), lambda: None, register=register)
     channel = FakeChannel()
 
     summary = handle(consumer, valid_envelope(), channel)
 
     # 关键：登记失败时**不能**继续 claim——那会造成未登记就产生副作用
-    assert summary.claimed == 0
+    assert summary.wakeups == 0
     assert summary.retried == 1, "登记失败应进入退避重试"
     assert channel.published[0][3]["x-retry-tier"] == 1
 
@@ -430,14 +429,14 @@ def test_inbox_payload_conflict_goes_to_dead_letter():
     def register(envelope: dict[str, Any]) -> str:
         raise ConsumerError("同 eventId 出现不同载荷", retryable=False)
 
-    consumer = RabbitConsumer(make_settings(), lambda: {"claimed": 1}, register=register)
+    consumer = RabbitConsumer(make_settings(), lambda: None, register=register)
     channel = FakeChannel()
 
     summary = handle(consumer, valid_envelope(), channel)
 
     assert channel.rejected == [(7, False)]
     assert summary.dead_lettered == 1
-    assert summary.claimed == 0
+    assert summary.wakeups == 0
 
 
 # ----------------------------------------------------------------- 常量一致性
@@ -489,7 +488,7 @@ def test_republish_restores_original_routing_key_and_acks():
     ``retry.republish``，业务交换机上没有它的 binding。
     消费者读 ``x-original-routing-key`` 复原后才投得回去。
     """
-    consumer = RabbitConsumer(make_settings(), lambda: {"claimed": 0})
+    consumer = RabbitConsumer(make_settings(), lambda: None)
     channel = FakeChannel()
     summary = ConsumeSummary(delivered=1)
 
@@ -515,7 +514,7 @@ def test_republish_without_original_routing_key_goes_to_dead_letter():
     猜一个 routing key 等于把消息投给错误的消费者：
     看起来"处理完了"，实际业务根本没被触发。
     """
-    consumer = RabbitConsumer(make_settings(), lambda: {"claimed": 0})
+    consumer = RabbitConsumer(make_settings(), lambda: None)
     channel = FakeChannel()
     summary = ConsumeSummary(delivered=1)
 
@@ -534,7 +533,7 @@ def test_republish_failure_keeps_message_unacked():
     ACK 掉就等于丢消息：消息不在再发布队列里，也从未回到业务队列，
     而两边都没有它的副本。不确认则连接关闭后 broker 自动重投。
     """
-    consumer = RabbitConsumer(make_settings(), lambda: {"claimed": 0})
+    consumer = RabbitConsumer(make_settings(), lambda: None)
     channel = FakeChannel(publish_error=RuntimeError("UnroutableError"))
     summary = ConsumeSummary(delivered=1)
 
@@ -556,7 +555,7 @@ def test_consumer_reports_incremental_stats_to_backend():
     """消费结果必须**增量**上报：后端累加，传累计值会让计数在重启后倒退。"""
     reported: list[dict[str, int]] = []
 
-    consumer = RabbitConsumer(make_settings(), lambda: {"claimed": 1},
+    consumer = RabbitConsumer(make_settings(), lambda: None,
                                report_stats=reported.append)
     channel = FakeChannel()
 
@@ -581,7 +580,7 @@ def test_consumer_stats_failure_does_not_break_consumption():
     def broken_report(_delta: dict[str, int]) -> None:
         raise RuntimeError("后端不可用")
 
-    consumer = RabbitConsumer(make_settings(), lambda: {"claimed": 1},
+    consumer = RabbitConsumer(make_settings(), lambda: None,
                                report_stats=broken_report)
     channel = FakeChannel()
 
@@ -593,7 +592,7 @@ def test_consumer_stats_failure_does_not_break_consumption():
 
 def test_consumer_keeps_totals_across_rounds():
     """累计值跨轮次保留：lastSummary 只描述最近一轮，多轮之间无法对账。"""
-    consumer = RabbitConsumer(make_settings(), lambda: {"claimed": 1},
+    consumer = RabbitConsumer(make_settings(), lambda: None,
                                report_stats=lambda _d: None)
     channel = FakeChannel()
 
@@ -612,7 +611,7 @@ def test_consumer_stats_reports_dead_letter_and_retry_separately():
     而这两种的处置完全不同。
     """
     reported: list[dict[str, int]] = []
-    consumer = RabbitConsumer(make_settings(), lambda: {"claimed": 0},
+    consumer = RabbitConsumer(make_settings(), lambda: None,
                                report_stats=reported.append)
 
     # 契约错误 → 不可重试 → 直接进死信

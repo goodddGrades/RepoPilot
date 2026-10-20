@@ -15,10 +15,20 @@
      claim 会按状态机过滤，Worker 无需自己判断。
   3. **降级天然可用**。消息丢了只是慢一个轮询周期，任务不会被"卡住"。
 
-**ACK 时机**：``claim`` 成功返回**之后**才 ACK。
-在``claim`` 之前 ACK，一旦此刻崩溃，唤醒信号就丢了；而在``claim`` 之后 ACK，
-最坏情况只是多收到一次唤醒——``claim`` 幂等且可能返回空，不会产生副作用。
-反向选择（先ACK）把"丢消息"的风险放大了，收益是零。
+**ACK 时机**：Inbox 登记成功、**且唤醒已交给执行线程**之后才 ACK。
+ACK 表达的是"这条唤醒已经被可靠接住"，**不是**"任务已经执行完"：
+
+* 任务本身在数据库里，由 claim + 租约决定谁执行；消息只是触发器。
+* 登记失败（后端不可用）→ 不 ACK，按可重试失败进退避队列。
+* 执行线程已停止 → 交接失败 → 不 ACK，连接关闭后由 broker 重投，不会静默丢唤醒。
+* 极端情况：ACK 之后进程被强杀，这次唤醒没被执行——任务仍是 QUEUED，
+  ``WORKER_AUTOSTART=true``（默认）时由轮询兜底领走。纯消息模式下这个窗口存在，
+  属于已知限制（见 docs/modules/messaging-reliability.md §11）。
+
+**长任务不占用消费者**：``on_wakeup`` 只做"唤醒计数 +1 并置位 Event"就返回，
+真正的 Agent Run 由 ``runtime`` 里**唯一的执行线程**串行跑。
+因此 ``prefetch=1`` 也不会让一个跑十分钟的任务把连接堵住——
+消息在回调里几百微秒就处理完（登记 + 记账 + ACK），后续消息与再发布队列照常消费。
 
 **Inbox 登记在 claim 之前**：``POST /internal/v1/notifications/accept``。
 这一步不是"多余的一次 HTTP"——它承担三件事：
@@ -27,15 +37,6 @@
   3. **异内容检测**：同一个 eventId 出现不同载荷是**数据损坏**，
      必须隔离告警，而不是当正常重复静默 ACK。
 跳过它，Inbox 表在消息通道上形同虚设，"重放不会产生重复副作用"也无从证明。
-
-**长任务会占住消费者线程（已知限制，见 docs/modules/messaging-reliability.md §11）**：
-``basic_qos(prefetch_count)`` 设为 1，一条消息处理完（登记 + 领取 + 执行 + 回传）才取下一条。
-真实的 ``on_wakeup`` 是 ``runtime.run_once``，它在回调线程里同步跑完整个任务，
-所以任务执行期间这条连接不再取新消息，再发布队列也一起暂停。
-``prefetch=1`` 保证的是"未处理的消息留在 broker 里、进程崩溃后自动回队"，
-**不是**"消费者始终空闲"：拉高 prefetch 会让消息在客户端排队直到连接断开——
-看起来"已投递"，实际可能永远不被处理。
-影响是延迟而非丢失：任务结束即恢复消费，``WORKER_AUTOSTART=true`` 时还有轮询线程兜底。
 
 **失败分类与退避**（TASK-013-C）：
   * **不可重试**（契约错误：非法 JSON、缺字段、未知版本）→ 直接进 DLQ。
@@ -155,7 +156,11 @@ class ConsumeSummary:
     acked: int = 0
     retried: int = 0
     dead_lettered: int = 0
-    claimed: int = 0
+    # 交给执行线程的唤醒次数。
+    #
+    # **不是"领到几个任务"**：领取发生在执行线程里，消息通道看不到，
+    # 也不该看到——在回调里 claim 会给任务一个租约，排队等待期间就会过期。
+    wakeups: int = 0
     duplicates: int = 0
     # 退避到期的消息被重新投递回业务交换机的次数。
     # 单列而不是并入 acked：它的入队来源是再发布队列而不是业务队列，
@@ -173,7 +178,7 @@ class ConsumeSummary:
             "acked": self.acked,
             "retried": self.retried,
             "deadLettered": self.dead_lettered,
-            "claimed": self.claimed,
+            "wakeups": self.wakeups,
             "duplicates": self.duplicates,
             "republished": self.republished,
             "rejectFailed": self.reject_failed,
@@ -261,7 +266,7 @@ class RabbitConsumer:
         # 也不要少计（少计会让"处理了多少"对不上账）。
         self._reported: dict[str, int] = {
             "delivered": 0, "processed": 0, "acked": 0, "retried": 0,
-            "deadLettered": 0, "claimed": 0, "duplicates": 0,
+            "deadLettered": 0, "wakeups": 0, "duplicates": 0,
             "republished": 0, "rejectFailed": 0,
         }
 
@@ -435,7 +440,7 @@ class RabbitConsumer:
         totals.acked += summary.acked
         totals.retried += summary.retried
         totals.dead_lettered += summary.dead_lettered
-        totals.claimed += summary.claimed
+        totals.wakeups += summary.wakeups
         totals.duplicates += summary.duplicates
         totals.republished += summary.republished
         totals.reject_failed += summary.reject_failed
@@ -460,7 +465,7 @@ class RabbitConsumer:
                 "acked": totals.acked - self._reported["acked"],
                 "retried": totals.retried - self._reported["retried"],
                 "deadLettered": totals.dead_lettered - self._reported["deadLettered"],
-                "claimed": totals.claimed - self._reported["claimed"],
+                "wakeups": totals.wakeups - self._reported["wakeups"],
                 "duplicates": totals.duplicates - self._reported["duplicates"],
                 "republished": totals.republished - self._reported["republished"],
                 "rejectFailed": totals.reject_failed - self._reported["rejectFailed"],
@@ -495,10 +500,16 @@ class RabbitConsumer:
                     summary.duplicates += 1
                     log.info("事件 {} 命中 Inbox 去重，仍触发一次唤醒", envelope["eventId"])
 
-            # 第二步：唤醒。真正干活的是 claim，它会按能力竞争决定领不领得到。
-            # 这一步失败时消息必须重投——否则这次唤醒就永久丢失了。
-            claimed = self.on_wakeup() or {}
-            summary.claimed = int(claimed.get("claimed", 0) or 0)
+            # 第二步：把"有活干了"这件事交给执行线程，立即返回。
+            #
+            # **这里刻意不执行任务、也不 claim**：
+            #   * 执行 Agent Run 可能几十分钟，放在回调里会把 AMQP 连接堵死，
+            #     后续消息与再发布队列都停摆；
+            #   * claim 会给任务一个租约，领完排在执行线程队列里等待，
+            #     等轮到它时租约可能已过期，任务被别的 Worker 领走。
+            # 交接失败（执行线程已停）按可重试处理，消息不 ACK。
+            self.on_wakeup()
+            summary.wakeups += 1
             channel.basic_ack(method.delivery_tag)
             summary.acked += 1
         except ConsumerError as exc:

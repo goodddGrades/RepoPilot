@@ -133,7 +133,7 @@ def test_consumer_survives_broker_being_unavailable(queue: str):
     任务照跑不误——只是慢一个轮询周期。
     消息通道此时的表现是"连不上"，不是"卡住不动"。
     """
-    consumer = RabbitConsumer(settings(queue), lambda: {"claimed": 0})
+    consumer = RabbitConsumer(settings(queue), lambda: None)
 
     # 队列是空的：drain_once 会连上 broker、发现没消息、正常返回
     result = consumer.drain_once()
@@ -149,7 +149,7 @@ def test_connection_to_dead_port_fails_fast_with_clear_error():
     """
     dead_port = free_port()
     consumer = RabbitConsumer(settings(RUN_QUEUE, rabbitmq_port=dead_port),
-                               lambda: {"claimed": 0})
+                               lambda: None)
 
     started = time.monotonic()
     with pytest.raises(Exception):
@@ -169,12 +169,12 @@ def test_consumer_reconnects_after_broker_recovers(queue: str):
     """
     dead_port = free_port()
     broken = RabbitConsumer(settings(queue, rabbitmq_port=dead_port),
-                            lambda: {"claimed": 1})
+                            lambda: None)
     with pytest.raises(Exception):
         broken.drain_once()
 
     # broker 恢复：换回真实地址
-    recovered = RabbitConsumer(settings(queue), lambda: {"claimed": 1})
+    recovered = RabbitConsumer(settings(queue), lambda: None)
 
     conn = connection()
     try:
@@ -226,7 +226,7 @@ def test_unacked_message_returns_to_queue_after_consumer_restart(queue: str):
     assert queue_depth(queue) == 1, "未 ACK 的消息在消费者重启后丢失了"
 
     # 第二个消费者（新进程）：能拿到并正常处理
-    second = RabbitConsumer(settings(queue), lambda: {"claimed": 1})
+    second = RabbitConsumer(settings(queue), lambda: None)
     result = second.drain_once()
     assert result["acked"] == 1
     assert result["empty"] is False
@@ -262,7 +262,7 @@ def test_message_survives_mid_processing_crash(queue: str):
     time.sleep(1.0)
 
     # 恢复后的消费者能重新拿到并处理
-    consumer = RabbitConsumer(settings(queue), lambda: {"claimed": 1})
+    consumer = RabbitConsumer(settings(queue), lambda: None)
     result = consumer.drain_once()
     assert result["acked"] == 1
 
@@ -274,7 +274,7 @@ def test_prefetch_one_keeps_unprocessed_messages_in_broker(queue: str):
     那些消息在客户端排队直到连接断开——看起来"已投递"，
     实际可能永远不被处理，而且连接一断就一起丢。
     """
-    consumer = RabbitConsumer(settings(queue), lambda: {"claimed": 0})
+    consumer = RabbitConsumer(settings(queue), lambda: None)
     assert consumer.settings.rabbitmq_prefetch == 1, \
         "prefetch 必须是 1，否则崩溃时未处理的消息会随连接一起消失"
 
@@ -300,7 +300,7 @@ def test_backlog_is_visible_through_queue_depth(queue: str):
     time.sleep(0.8)
     assert queue_depth(queue) == 5
 
-    consumer = RabbitConsumer(settings(queue), lambda: {"claimed": 0})
+    consumer = RabbitConsumer(settings(queue), lambda: None)
     result = consumer.drain_once()
     assert result["acked"] == 1
     time.sleep(0.3)

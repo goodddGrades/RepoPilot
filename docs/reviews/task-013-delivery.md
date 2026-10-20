@@ -9,7 +9,7 @@
 | 问题 | 结果 |
 | --- | --- |
 | 消息真的经过 RabbitMQ 了吗 | 是。三档退避各进各的等待队列，TTL 到期经再发布层回业务队列，档位用尽进 DLQ |
-| 消费侧真的接上了吗 | 是。Worker 消费 → Inbox 登记 → claim → ACK；两条通道都收敛到同一个 claim |
+| 消费侧真的接上了吗 | 是。Worker 消费 → Inbox 登记 → 置位唤醒 → ACK，执行由独立线程 claim 后完成 |
 | 失败消息会被丢吗 | 不会。可重试走退避，耗尽进 DLQ 并保留原始信封与 `x-death` |
 | 数据会不会被误删 | 不会。Outbox 只删"已发布且超期"，PENDING / FAILED 永不自动删除 |
 | 能否重复执行 | 能。`tools/demo-task-013.sh` 连续多轮 EXIT=0 |
@@ -58,12 +58,14 @@
 ### TASK-013-B：Worker 真正通过 RabbitMQ 消费 ✅
 
 * `repopilot-worker/app/consumer.py`：pika BlockingConnection + 独立线程，`prefetch` 可配。
-* 消费顺序：**Inbox 登记 → claim → ACK**。先 ACK 会让"进程在干活前崩溃"变成消息永久丢失。
+* 消费顺序：**Inbox 登记 → 置位唤醒 → ACK**。ACK 表示"唤醒已被可靠接住"，不是"任务已执行"；
+  登记失败或执行线程已停止时不 ACK，由退避队列或 broker 重投接手。
 * 消息只带 `runId`（信封里不放正文）：消息不是任务，任务在后端数据库里；消费后用消息触发一次 `claim`。
 * 重复投递：Inbox 唯一键 `(consumer_name, event_id)` 让第 2..N 次命中 `DUPLICATE`，仍触发一次唤醒，claim 幂等返回空。
-* 长任务不占消费者：回调只做三件短事，真正的执行由轮询线程异步推进；`prefetch=1` 限制的是"并发处理几条唤醒"。
+* **长任务不占消费者**：回调只做三件短事，真正的 Agent Run 由唯一的 `worker-exec` 线程串行执行；
+  唤醒用"计数器 + Event"，线程数与唤醒次数无关、N 条消息最多触发 N 轮（见 §9.4）。
 * HTTP 轮询保留为降级通道，两通道都走 `run_once() → claim`，**重复的是唤醒、不是执行**（详见手册 §1.1）。
-* 配置：`WORKER_RABBITMQ_ENABLED`（默认 **false**，避免"没配 MQ"这种合法部署起不来）、`WORKER_RABBITMQ_QUEUE`、`WORKER_INBOX_CONSUMER_NAME` 等写入 `.env.example`。
+* 配置：`WORKER_RABBITMQ_ENABLED`（默认 **false**，避免"没配 MQ"这种合法部署起不来）、`WORKER_RABBITMQ_QUEUE`、`WORKER_INBOX_CONSUMER_NAME`、`WORKER_SHUTDOWN_TIMEOUT` 等写入 `.env.example`。
 
 ### TASK-013-C：失败消息、重试与死信 ✅
 
@@ -272,14 +274,18 @@ TASK-013 新增/改写的集成测试：
 ### Worker（Python 3.13 + pika 1.3.2 + 真实 broker）
 
 ```
-232 passed, 4 skipped, 9 warnings in 162.58s (0:02:42)
+239 passed, 4 skipped, 9 warnings in 265.25s (0:04:25)   EXIT=0
 ```
+
+> 这是**测试隔离修复之后**的最终一次全量运行。此前多次复跑（202s / 218s / 265s）结果一致，
+> 均为 239 passed / 4 skipped，说明结论与执行顺序无关。
 
 4 条 skipped 全部是 `test_cli_runner_smoke.py` 里"需显式开启、会产生真实费用"的真实 CLI 冒烟：
 **本轮按未执行处理，不计入通过数**。除这 4 条外，Worker 侧全部用例（含真实 broker 的
-`test_consumer_rabbit.py` / `test_recovery_rabbit.py`）都实际执行并通过。
+`test_consumer_rabbit.py` / `test_recovery_rabbit.py` / `test_consumer_execution.py`）都实际执行并通过。
 新增测试文件：`test_consumer_protocol.py`（协议与统计上报）、`test_consumer_rabbit.py`（真实 broker 消费）、
-`test_recovery_rabbit.py`（7 个故障恢复）、`test_migrate_retry_topology.py`（10 个迁移工具）。
+`test_recovery_rabbit.py`（7 个故障恢复）、`test_migrate_retry_topology.py`（10 个迁移工具）、
+`test_consumer_execution.py`（7 个执行线程模型：长任务不阻塞消费、唤醒合并、异常存活、优雅关闭）。
 
 ### 端到端演示
 
@@ -348,7 +354,8 @@ CI 工作流已更新（`.github/workflows/ci.yml`）：
 | DLQ 的独立保留策略 | ❌ 未实现 | DLQ 消息在 broker 里，不受 `RetentionService` 管辖；积压需人工或独立策略 |
 | 消费延迟指标的口径 | ⚠️ 近似 | 用"发布确认 → Inbox 登记"的时间差推算，**不是**端到端真实处理耗时；且只统计最近 100 条已发布事件 |
 | 消费统计的上报可靠性 | ⚠️ 下界 | Worker 主动上报、不保证送达；失败会在下一轮重报，但进程被杀时未上报的增量会丢失。后端计数是**下界**，精确对账看 `inbox_events` 行数 |
-| **长任务占住消费者线程** | ⚠️ 延迟 | `on_wakeup` 是 `runtime.run_once()`，在 AMQP 回调线程里**同步**跑完 claim → 执行 → 回传 → ACK。任务执行期间不取新消息，**再发布队列一并暂停**，重试回流被推迟到任务结束。不丢消息、不重复执行，但严格意义上不满足"长任务不占用消费者"。改法是把执行移到独立线程、回调只做登记 + 置位唤醒 + ACK；验收轮未改动执行模型，已写入 `docs/modules/messaging-reliability.md` §11 |
+| **单执行线程（不并发跑多个 Run）** | ⚠️ 设计取舍 | Agent Run 在唯一的 `worker-exec` 线程里串行执行。并发会改变 `WORKER_MAX_TASKS`、心跳与租约的语义，CLI 本身也吃资源。消息再多也只合并唤醒，不并行开跑；横向扩容靠加 Worker 实例 |
+| **纯消息模式的唤醒窗口** | ⚠️ 已知边界 | `WORKER_AUTOSTART=false` 时没有轮询兜底：ACK 之后、执行之前进程被强杀，这次唤醒不会重放（任务仍是 QUEUED，但没人触发）。生产保持 `WORKER_AUTOSTART=true`（默认）即可消除 |
 | 迁移工具的真实积压演练 | ⚠️ 部分 | 10 个用例在真实 broker 上验证过（含"拒绝删除非空队列"）；**未在真实生产积压上执行** |
 | 跨机房/多集群 | ❌ 未验证 | DLX 与业务交换机同 vhost；跨集群需 federation，语义要重新验证 |
 | 前端 | ➖ 未改动 | 本任务不涉及 UI |
@@ -375,6 +382,8 @@ CI 工作流已更新（`.github/workflows/ci.yml`）：
 | 8 | `OutboxScheduler` 在集成测试里仍以 1 秒节拍抢发布其他用例的数据 | 测试环境里的后台线程改被测对象 |
 | 9 | 用例假设"自己插入的行一定在全局批量的第一批里"，积压超过 `batch-limit` 后必红 | 测试对全局表状态隐式依赖 |
 | 10 | `repopilot.consumer.failed` 恒为 0（Worker 从不上报 `failed`） | 指标存在但永远不增长 |
+| 11 | `on_wakeup` 直接接 `runtime.run_once`，AMQP 回调线程同步跑完整个 Agent Run；长任务期间不取新消息，再发布队列一起停摆 | 执行模型错位（消息处理器承担了执行器职责）；文档还把它写成了"长任务不占用消费者" |
+| 12 | 迁移工具的测试清理旧拓扑时，把**同名**的当前队列 `repopilot.retry.wait.tN` 一起删掉且不恢复 | 测试污染共享 broker：全量跑完后后续用例报 `NOT_FOUND`，失败点看起来与迁移毫无关系 |
 
 前 9 条的实测经过写在 `docs/reviews/task-013-amqp-facts.md`（28 条），第 10 条见 `ConsumerStatsController` 注释。
 
@@ -385,7 +394,7 @@ CI 工作流已更新（`.github/workflows/ci.yml`）：
 | 项 | 命令 / 条件 | 结果 |
 | --- | --- | --- |
 | 后端单元 + 集成 | `./mvnw -B -o verify`，真实 MySQL 8.0.22 @13306 + 真实 RabbitMQ 3.13.7 @5672，`REPOPILOT_IT_REQUIRE_ALL_UP=true` | **75 单测 + 258 集成，0 失败 0 错误 0 跳过，BUILD SUCCESS**（2:50） |
-| Worker | 真实 broker，`WORKER_TEST_RABBIT_*` 指向本机 | **232 passed / 4 skipped**（4 条付费 CLI 冒烟**未执行**，不计入通过数；其余含真实 broker 用例全部执行） |
+| Worker | 真实 broker，`WORKER_TEST_RABBIT_*` 指向本机 | **239 passed / 4 skipped**（4 条付费 CLI 冒烟**未执行**，不计入通过数；其余含真实 broker 用例全部执行） |
 | 前端 | `npm run build` | **EXIT=0**（本任务未改前端；1.1 MB 单 chunk 警告是既有问题） |
 | 设计校验 | `tools/verify_design.py` | **PASS**（1289 checks / 28 tables / 4 json_schemas） |
 | 生成器一致性 | `gen_ddl_from_dict.py --check`、`gen_java_from_dict.py --check`、`--self-test` | 全部 OK（6 个迁移 / 76 个 Java 文件 / 自测 6 项） |
@@ -410,3 +419,56 @@ CI 工作流已更新（`.github/workflows/ci.yml`）：
 * 后端在线时的受控重放 HTTP 路径 —— 本轮演示时后端未启动，证据来自
   `RabbitTopologyIT` 的重放用例与 `MessagingObservabilityIT` 的真实 HTTP 端点用例。
 * GitHub Actions —— 未 push，未触发。
+
+### 9.4 验收轮修复：长任务占用消费者线程
+
+**问题**：`on_wakeup` 接的是 `runtime.run_once`，AMQP 回调线程会同步跑完
+claim → 执行 → 回传 → ACK。一个十分钟的 Run 会让这条连接十分钟不取新消息，
+**再发布队列也一起停摆**（两个队列共用同一个回调线程）。
+
+**修复**（`app/runtime.py` / `app/consumer.py`）：
+
+| 环节 | 改法 | 为什么 |
+| --- | --- | --- |
+| 消费者回调 | 只做"Inbox 登记 → 唤醒计数 +1 / Event 置位 → ACK" | 回调跑在 pika 的 I/O 线程里，任何长耗时都会阻塞心跳与后续投递 |
+| 执行 | 唯一 `worker-exec` 线程串行跑 `run_once` | 并发会改变 `WORKER_MAX_TASKS`、心跳与租约语义；线程数恒定 |
+| 唤醒传递 | 计数器 + `threading.Event`；按计数跑，空轮次提前收敛 | 队列会无界增长；纯布尔信号又会把 N 条消息并成一次唤醒，纯消息模式下剩余任务被搁置 |
+| claim 时机 | 在执行线程真正开跑时 | 回调里 claim 会给任务一个租约，排队等待期间就会过期，被别的 Worker 领走 |
+| ACK 语义 | 登记成功 + 唤醒已交接才 ACK | ACK 代表"唤醒被接住"，不代表"任务已执行"；任务由 DB + 租约保证 |
+| 关闭 | 停消费 → 置位唤醒 → `join(WORKER_SHUTDOWN_TIMEOUT)` | 正在跑的 Run 不被腰斩；超时则放弃，租约到期由回收器接手 |
+
+`ConsumeSummary` 的 `claimed` 字段随之改为 `wakeups`：消息通道已经不 claim 了，
+继续叫 `claimed` 会变成一个恒为 0 的假计数器。`claim` 的真实计数仍在 `/worker/status`
+的 `lastSummary.claimed` 里。
+
+**测试证据**（`repopilot-worker/tests/test_consumer_execution.py`，7 条，真实 broker）：
+
+| 用例 | 断言 |
+| --- | --- |
+| `test_long_run_does_not_block_consumer` | Run 卡住时第二条消息仍被登记并 ACK，队列深度归零 |
+| `test_retryable_failure_still_retries_while_run_executes` | 执行期间登记失败仍进 `repopilot.retry.wait.t1` |
+| `test_duplicate_delivery_during_long_run_is_idempotent` | 重复投递全部 ACK、`duplicates=2`、不进死信、执行被合并 |
+| `test_many_wakeups_stay_bounded_and_drain_all_work` | 200 次唤醒只多 1 个线程；5 个任务全部领走，空轮次提前收敛 |
+| `test_execution_exception_does_not_kill_execution_thread` | 一轮抛异常后线程存活，下一次唤醒仍执行 |
+| `test_graceful_shutdown_waits_for_inflight_run` | `stop()` 在 Run 结束前不返回，结束后线程退出 |
+| `test_shutdown_rejects_new_wakeups` | 停止后唤醒抛错 → 消息不 ACK，由 broker 重投 |
+
+**对照验证（证明用例能抓到原缺陷）**：临时把接线改回 `RabbitConsumer(..., self.run_once)`
+后重跑主用例，失败信息为
+`长任务执行期间消费者必须继续处理消息，实际只登记了 ['01M5C0000000000000000000AA']`
+——第二条消息确实卡在回调外；改回 `schedule_wakeup` 后 7/7 通过。
+
+### 9.5 顺带修掉的测试隔离问题
+
+修复过程中发现：`test_migrate_retry_topology.py` 的 teardown 会删除旧拓扑队列，
+而旧拓扑与当前拓扑**共用** `repopilot.retry.wait.tN` 这组队列名，
+于是跑完 Worker 全量后 broker 上少了三个真实队列，紧接着的单条重试用例报
+`NOT_FOUND - no queue 'repopilot.retry.wait.t1'`，失败点与迁移工具毫无关联。
+
+修法：把"删旧拓扑"与"恢复当前拓扑"拆成两个函数——
+fixture 的 teardown 在删完之后调用 `tools/task013_broker.py declare-topology` 恢复，
+需要"旧队列确实不存在"这个前置条件的用例（`test_drain_tolerates_absent_legacy_topology`）
+只调删除、不恢复。队列参数不复制到测试里，避免与工具漂移。
+
+验证：迁移测试 10/10 通过后立刻跑执行模型测试 7/7 通过（修复前必红），
+再跑 Worker 全量仍是 239 passed。

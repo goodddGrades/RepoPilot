@@ -32,6 +32,11 @@ V1通知注册：run.ready（payload.runId）、evaluation.ready（payload.jobId
 
 交换机 repopilot.events，topic 类型；队列 repopilot.run.ready、repopilot.evaluation.ready、repopilot.experiment.finished，均为 quorum 队列。消息持久化、队列 durable，manual ACK；prefetch 默认与本地并发一致。
 
+**消费与执行分离**：消费回调只做三件短事——Inbox 登记、唤醒计数+置位、ACK；
+Agent Run 在 Worker 的独立执行线程里串行跑（`worker-exec`，只有一个）。
+ACK 表达"唤醒已被接住"，不表达"任务已执行"；任务由数据库 + claim 租约保证。
+因此长任务不会阻塞 AMQP 连接，后续消息与再发布队列照常消费。
+
 ### TASK-013 实际拓扑（四层）
 
 TASK-013 把重试从"业务队列 → DLQ"两节点扩展为四层。每一层解决一个具体问题，缺一层就会丢消息或无限重投。
