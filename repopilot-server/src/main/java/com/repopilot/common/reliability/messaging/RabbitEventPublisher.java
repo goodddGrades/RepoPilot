@@ -12,6 +12,7 @@ import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.connection.Connection;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
@@ -43,6 +44,12 @@ import java.util.concurrent.atomic.AtomicReference;
  * ——这正是 inbox 去重存在的原因。本实现不宣称恰好一次，
  *也<b>不用 publisher confirm 推断 Agent 是否完成</b>。
  *
+ * <p><b>exchange 不能传空字符串</b>：{@code ""} 是 default exchange，
+ * 它按<b>队列名</b>精确匹配 routing key。路由键是 eventType（如 {@code run.ready}），
+ * 于是 broker 会去找叫 "run.ready" 的队列，找不到就报
+ * {@code NOT_FOUND - no exchange 'run.ready'}——TASK-011 就是这样让所有事件卡在 PENDING 的。
+ * 正确做法是发到 {@link RabbitTopology#EVENTS_EXCHANGE}，由 binding 分发到队列。
+ *
  * <p><b>为什么是本bean 而不是共享 RabbitTemplate</b>：
  * {@code matchIfMissing} 让它在没有显式配置时生效；而当配置指向别的实现
  * （如故障注入替身）时 {@code havingValue} 不匹配，本 bean 不注册——
@@ -62,10 +69,14 @@ public class RabbitEventPublisher implements EventPublisher {
     private final ConnectionFactory connectionFactory;
     private final ObjectMapper objectMapper;
     private final String publisherId;
+    private final String exchange;
 
-    public RabbitEventPublisher(ConnectionFactory connectionFactory, ObjectMapper objectMapper) {
+    public RabbitEventPublisher(ConnectionFactory connectionFactory, ObjectMapper objectMapper,
+                                @Value("${repopilot.rabbitmq.events-exchange:"
+                                        + RabbitTopology.EVENTS_EXCHANGE + "}") String exchange) {
         this.connectionFactory = connectionFactory;
         this.objectMapper = objectMapper;
+        this.exchange = exchange;
         this.publisherId = "rabbit-" + Ulid.newId();
     }
 
@@ -105,11 +116,18 @@ public class RabbitEventPublisher implements EventPublisher {
                     returned.compareAndSet(null,
                             "replyCode=" + replyCode + " replyText=" + replyText));
             channel.confirmSelect();
-            // mandatory=true：路由不到队列时 broker 退回而不是默默丢弃
-            channel.basicPublish(routingKey, "", true, properties, body);
+            // mandatory=true：路由不到队列时 broker 退回而不是默默丢弃。
+            //
+            // exchange 必须是 repopilot.events，而不是空字符串：
+            // 传"" 是发到 default exchange，它按**队列名**精确匹配 routing key，
+            // 于是路由键 "run.ready" 被当成队列名去找，找不到就报
+            // NOT_FOUND - no exchange 'run.ready'。TASK-011 的实现正是这样，
+            // 导致每条事件都被退回、永远卡在 PENDING。
+            channel.basicPublish(exchange, routingKey, true, properties, body);
+            boolean allAcked;
             try {
                 // 逐条等待确认：一条消息一个 channel，确认结果只属于它自己
-                channel.waitForConfirms(CONFIRM_TIMEOUT_MS);
+                allAcked = channel.waitForConfirms(CONFIRM_TIMEOUT_MS);
             } catch (Exception ex) {
                 // 超时/中断：不能断言失败，broker 可能已经收下
                 return PublishOutcome.uncertain("等待 confirm 失败: " + ex.getMessage());
@@ -118,6 +136,16 @@ public class RabbitEventPublisher implements EventPublisher {
                 // ack 与 return 可同时发生：路由不到队列时 broker 照样 ack。
                 // 只看 confirm 会把"发到没有消费者的队列"当成成功
                 return PublishOutcome.returned(returned.get());
+            }
+            if (!allAcked) {
+                // **返回值必须检查**：waitForConfirms 返回的是"这一轮里只收到了 ack 吗"，
+                // 出现NACK 时它返回 false 而不是抛异常。忽略返回值等于把 broker 的
+                // 明确拒绝当成发布成功——Outbox 于是标 PUBLISHED，这条消息永远不再重发，
+                // 事件静默丢失。实测依据见 docs/reviews/task-013-amqp-facts.md。
+                //
+                // 判failed 而非 uncertain：NACK 是 broker 的明确答复（不是"不知道"），
+                // 消息确实没被接受，重试是正确的处置。
+                return PublishOutcome.failed("broker NACK：消息被拒绝（confirm 返回 false）");
             }
             return PublishOutcome.success();
         } catch (Exception ex) {

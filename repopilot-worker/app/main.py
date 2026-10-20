@@ -24,13 +24,18 @@ from app.config import get_settings
 
 @asynccontextmanager
 async def _lifespan(settings) -> AsyncIterator[None]:
-    """按配置启停后台轮询；默认不启动。"""
-    if settings.autostart:
+    """按配置启停后台执行。
+
+    启动条件是「**任一**通道启用」，不是只看 autostart：
+    只开 RabbitMQ 不开轮询是一个合法且推荐的部署形态（消息驱动 + 手动兜底），
+    若这里只看 autostart，订阅了队列却没人消费——消息会一直堆在队列里。
+    """
+    if settings.autostart or settings.rabbitmq_enabled:
         from app.runtime import get_runtime
 
         get_runtime().start()
     yield
-    if settings.autostart:
+    if settings.autostart or settings.rabbitmq_enabled:
         from app.runtime import reset_runtime
 
         reset_runtime()

@@ -79,6 +79,48 @@ class WorkerClient:
                                  payload.get("message", "unknown error"))
         return payload.get("data") or {}
 
+    # ------------------------------------------------------------------ Inbox（TASK-013-C）
+
+    def accept_notification(self, consumer_name: str, envelope: dict[str, Any]) -> str:
+        """把收到的事件登记进 Inbox，返回 ``ACCEPTED`` / ``DUPLICATE``。
+
+        ``POST /internal/v1/notifications/accept`` 承担三件事，
+        缺任何一件消息通道都不成立：
+
+        1. **去重**：``(consumer_name, event_id)`` 唯一键让重复投递没有业务效果；
+        2. **契约校验**：后端是事件契约的唯一权威，Worker 自查一遍必然漂移；
+        3. **异内容检测**：同一个 eventId 出现不同载荷是数据损坏，
+           后端返回 ``PAYLOAD_CONFLICT``（409），必须隔离而不是当重复静默 ACK。
+
+        **不自动重试**：登记失败应当由消费者决定去向（重投或进死信），
+        在传输层偷偷重试会让"失败了几次"这个诊断信息失真。
+        """
+        data = self._request("POST", "/internal/v1/notifications/accept", {
+            "consumerName": consumer_name,
+            "event": envelope,
+        })
+        return str(data.get("status") or "UNKNOWN")
+
+    # ------------------------------------------------------------------ 消费统计（TASK-013-E）
+
+    def report_consumer_stats(self, consumer_name: str, stats: dict[str, int]) -> None:
+        """把本轮消费统计上报给后端（``POST /internal/v1/messaging/consumer-stats``）。
+
+        **为什么消费结果必须由消费者上报**：后端数据库里看不到
+        "一条消息被 reject 进了死信"这件事——在 ``outbox_events`` 里它仍然是
+        ``PUBLISHED``（发布确实成功了），在 ``inbox_events`` 里也可能没有记录
+        （它压根没走到登记那一步）。消费成功的精确计数只在消费者进程里存在。
+
+        **上报失败必须被调用方吞掉**：统计上报是观测手段，不是业务路径。
+        让它把消息处理流程带崩，会用"观测手段坏了"换来"业务也坏了"。
+
+        **上报的是增量**：后端累加。传累计值的话，进程重启会让计数倒退。
+        """
+        self._request("POST", "/internal/v1/messaging/consumer-stats", {
+            "consumerName": consumer_name,
+            "stats": stats,
+        })
+
     # ------------------------------------------------------------------ 协议
 
     def claim(self, worker_id: str, capabilities: list[str], max_tasks: int) -> list[dict[str, Any]]:

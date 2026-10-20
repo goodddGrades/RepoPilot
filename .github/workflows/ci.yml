@@ -127,6 +127,13 @@ jobs:
           SPRING_RABBITMQ_PORT: '5672'
           SPRING_RABBITMQ_USERNAME: repopilot
           SPRING_RABBITMQ_PASSWORD: repopilot_rabbit_only
+          # TASK-013：RabbitTopologyIT 需要真实 broker 才能验证拓扑声明、
+          # confirm 与死信路由。不设这三个变量它会整体跳过——
+          # 跳过会写进报告，不会伪装成"测过"。
+          REPOPILOT_IT_RABBIT_HOST: 127.0.0.1
+          REPOPILOT_IT_RABBIT_PORT: '5672'
+          REPOPILOT_IT_RABBIT_USER: repopilot
+          REPOPILOT_IT_RABBIT_PASSWORD: repopilot_rabbit_only
         working-directory: repopilot-server
         run: ./mvnw -B verify
       - name: 校验迁移版本连续
@@ -148,6 +155,26 @@ jobs:
   worker:
     name: Worker（pytest）
     runs-on: ubuntu-latest
+    # TASK-013：退避重试必须跑在**真实 broker** 上。
+    # 替身验证不了 AMQP 语义——TASK-013 第一版的 headers 分档方案
+    # 在全绿的替身测试下，通过了19 个协议层用例，
+    # 却在真实 broker 上完全失效（x-match=all 忽略 x- 前缀字段）。
+    # 不挂broker 等于把这类缺陷留给生产。
+    services:
+      rabbitmq:
+        image: rabbitmq:3.13.7-management
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      WORKER_TEST_RABBIT_HOST: 127.0.0.1
+      WORKER_TEST_RABBIT_PORT: '5672'
+      WORKER_TEST_RABBIT_USER: repopilot
+      WORKER_TEST_RABBIT_PASSWORD: repopilot_rabbit_only
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -155,10 +182,33 @@ jobs:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: repopilot-worker/requirements-dev.txt
+      # service 容器的 broker 默认只有 guest/guest（限本机），
+      # 必须显式建账号并授权，否则测试会以"认证失败"跳过或报错。
+      # 用 docker exec 进service 容器操作，不依赖宿主网络。
+      - name: 创建并授权 broker 账号
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if docker exec "${{ job.services.rabbitmq.id }}" \
+              rabbitmqctl await_startup >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          docker exec "${{ job.services.rabbitmq.id }}" \
+            rabbitmqctl add_user repopilot repopilot_rabbit_only
+          docker exec "${{ job.services.rabbitmq.id }}" \
+            rabbitmqctl set_permissions -p / repopilot ".*" ".*" ".*"
+          docker exec "${{ job.services.rabbitmq.id }}" \
+            rabbitmqctl set_user_tags repopilot administrator
       - run: pip install -r requirements-dev.txt
         working-directory: repopilot-worker
-      - run: python -m pytest -q
+      - name: 跑测试（含真实 broker 的退避/死信链路）
+        run: python -m pytest -q
         working-directory: repopilot-worker
+        env:
+          WORKER_TEST_RABBIT_HOST: 127.0.0.1
+          WORKER_TEST_RABBIT_PORT: '5672'
+          WORKER_TEST_RABBIT_USER: repopilot
+          WORKER_TEST_RABBIT_PASSWORD: repopilot_rabbit_only
 
   web:
     name: Web（构建）

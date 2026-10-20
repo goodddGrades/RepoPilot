@@ -1,6 +1,7 @@
 package com.repopilot.common.reliability.mapper;
 
 import com.repopilot.common.reliability.entity.OutboxEvent;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -290,6 +291,50 @@ public interface OutboxEventMapper {
             SELECT MIN(created_at) FROM outbox_events WHERE status = 'PENDING'
             """)
     Optional<Instant> oldestPendingCreatedAt();
+
+    // ---- TASK-013-D：保留期清理 ----
+
+    /**
+     * 分批删除"已发布且过期"的行。
+     *
+     * <p><b>三个条件缺一不可</b>：
+     * <ul>
+     *   <li>{@code status='PUBLISHED'}：PENDING（含待重试、租约在途）与 FAILED
+     *       <b>永不自动删除</b>——它们是排障与人工重放的唯一线索。
+     *       定时任务把它们清掉，等于"故障发生时证据已经没了"。</li>
+     *   <li>{@code published_at IS NOT NULL AND published_at < cutoff}：
+     *       必须用 {@code published_at} 而不是 {@code created_at}。
+     *       一条 3 天前创建、今天才发布成功的事件，按创建时间算"已过期 3 天"
+     *       会被立刻删掉，而它其实刚发布、可能还有消费者没处理完。</li>
+     *   <li>{@code LIMIT}：一次删光百万行会持锁数分钟并撑爆 undo log，
+     *       阻塞所有写入。分批 + 每批独立短事务，让业务流量能插进来。</li>
+     * </ul>
+     *
+     * <p>没有 {@code ORDER BY}：清理不关心顺序，加了反而要额外排序。
+     */
+    @Delete("""
+            DELETE FROM outbox_events
+             WHERE status = 'PUBLISHED'
+               AND published_at IS NOT NULL
+               AND published_at < #{cutoff}
+             LIMIT #{limit}
+            """)
+    int deletePublishedBefore(@Param("cutoff") Instant cutoff, @Param("limit") int limit);
+
+    /**
+     * 人工删除 FAILED 行（运维显式调用，见 RetentionService#purgeFailedOutbox）。
+     *
+     * <p>同样带 {@code LIMIT}，避免一次删光。调用方必须显式传入时间下界——
+     * 没有"默认删掉 30 天前的失败事件"这种便利，因为那会让排障证据
+     * 在没人注意的时候消失。
+     */
+    @Delete("""
+            DELETE FROM outbox_events
+             WHERE status = 'FAILED'
+               AND created_at < #{cutoff}
+             LIMIT #{limit}
+            """)
+    int deleteFailedBefore(@Param("cutoff") Instant cutoff, @Param("limit") int limit);
 
     class StatusCount {
         public String status;

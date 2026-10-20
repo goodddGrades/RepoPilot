@@ -49,6 +49,20 @@ public class OutboxPublisherService {
     private final int maxAttempts;
     private final int batchLimit;
     private final Random jitter = new Random();
+    /** 本轮结果观察者：只用于指标计数，不参与发布决策（TASK-013）。 */
+    private volatile PublishObserver observer = PublishObserver.NOOP;
+
+    /** 发布结果观察者接口。由 OutboxScheduler 实现为 Micrometer 计数。 */
+    public interface PublishObserver {
+        PublishObserver NOOP = (success, exhausted) -> { };
+
+        void onResult(boolean success, boolean exhausted);
+    }
+
+    /** 注入指标观察者。由 OutboxScheduler 在构造后调用。 */
+    public void setObserver(PublishObserver observer) {
+        this.observer = observer == null ? PublishObserver.NOOP : observer;
+    }
 
     public OutboxPublisherService(OutboxEventMapper outbox, EventPublisher publisher,
                                   PlatformTransactionManager transactionManager,
@@ -144,7 +158,8 @@ public class OutboxPublisherService {
      * </ul>
      */
     private boolean applyOutcome(String eventId, String claimTokenHash, PublishOutcome outcome) {
-        return Boolean.TRUE.equals(tx.execute(status -> {
+        boolean[] exhausted = {false};
+        boolean published = Boolean.TRUE.equals(tx.execute(status -> {
             Instant now = Instant.now();
             if (outcome.routed()) {
                 int updated = outbox.markPublished(eventId, claimTokenHash, now);
@@ -161,6 +176,7 @@ public class OutboxPublisherService {
             if (attempt + 1 >= maxAttempts) {
                 int failed = outbox.markFailedPermanently(eventId, claimTokenHash, now);
                 if (failed == 1) {
+                    exhausted[0] = true;
                     log.error("事件 {} 发布重试 {} 次仍失败，置 FAILED 等待人工重新投递。原因: {}",
                             eventId, attempt + 1, outcome.detail());
                 }
@@ -171,6 +187,9 @@ public class OutboxPublisherService {
                     eventId, outcome.detail(), backoff(attempt).getSeconds(), attempt + 1, maxAttempts);
             return false;
         }));
+        // 指标在事务外记：观测行为不该影响事务语义，也避免观测异常回滚发布结果。
+        observer.onResult(published, exhausted[0]);
+        return published;
     }
 
     private int retryCountOf(String eventId) {

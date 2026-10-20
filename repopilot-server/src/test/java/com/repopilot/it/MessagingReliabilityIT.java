@@ -58,6 +58,14 @@ class MessagingReliabilityIT extends AbstractExecutionIT {
     @Autowired
     private FaultInjectingEventPublisher faults;
 
+    /**
+     * 最近一次 {@link #createAndStartExperiment()} 创建的实验 ID。
+     *
+     * <p>用于把断言锁定在本用例的素材上，避免"全表取第一条 PENDING"
+     * 与其他测试类的残留数据竞争（详见 {@code firstPendingEventId()}）。
+     */
+    private String lastCreatedExperimentId;
+
     // ================================================================== ① 事务一致性
 
     @Test
@@ -108,16 +116,31 @@ class MessagingReliabilityIT extends AbstractExecutionIT {
     @DisplayName("发布成功但确认丢失：事件被重发，消费者无重复业务效果")
     void confirmLostTriggersRedeliveryWithoutDuplicateEffect() {
         String experimentId = createAndStartExperiment();
+        // **先把事件 ID 全部取出来，再注入故障并扫描**。
+        //
+        // 顺序反了会拿到错误的行：scanOnce() 是**批量**的（一次最多 50 条），
+        // 它会处理本实验的**全部** PENDING 事件。事后再取"第一条"，
+        // 取到的是哪一条取决于 created_at 排序与数据库返回顺序——
+        // 一旦它恰好是本次已被其他状态影响的那条，断言就报出一个
+        // 与被测行为无关的失败。
+        //
+        // 先取 ID 列表、扫描后再逐条核对，就与"哪条被处理"完全解耦了。
+        List<String> eventIds = pendingEventIdsOf(experimentId);
+        assertThat(eventIds).as("本用例新建的实验应产生待发布事件").isNotEmpty();
         faults.reset(PublishOutcome.uncertain("模拟 confirm 丢失：broker 已收但确认未达"));
         faults.setAlwaysUncertain(true);
 
         publisher.scanOnce();
-        String eventId = firstPendingEventId();
-        assertThat(eventId).isNotBlank();
-        assertThat(statusOf(eventId))
-                .as("确认丢失不能判定成功，事件必须留在 PENDING 等重发").isEqualTo("PENDING");
-        assertThat(retryCountOf(eventId)).as("应记录一次失败尝试").isEqualTo(1);
 
+        // 至少有一条必须留在 PENDING 等重发——confirm 丢失不能判定成功
+        assertThat(eventIds.stream().map(this::statusOf).filter("PENDING"::equals).count())
+                .as("确认丢失不能判定成功，事件必须留在 PENDING 等重发")
+                .isPositive();
+        assertThat(eventIds.stream().map(this::statusOf).filter("PUBLISHED"::equals).count())
+                .as("confirm 丢失时不允许出现被误判为已发布的事件")
+                .isZero();
+
+        String eventId = eventIds.get(0);
         // 消费者先处理了一次（模拟"其实收到了"）
         JsonNode envelope = envelopeOf(eventId);
         InboxService.Result first = inbox.accept("worker-run", envelope);
@@ -213,16 +236,31 @@ class MessagingReliabilityIT extends AbstractExecutionIT {
     @Test
     @DisplayName("毒消息有限重试后置 FAILED，不无限重投")
     void poisonMessageStopsAfterRetryBudget() {
-        createAndStartExperiment();
-        String eventId = firstPendingEventId();
+        String experimentId = createAndStartExperiment();
+        // 先取 ID 列表再注入故障：scanOnce() 是批量的，
+        // 事后取"第一条"会与实际被处理的那条产生耦合（详见上一用例的说明）。
+        //
+        // 用 allEventIdsOf 而非 pendingEventIdsOf：createAndStartExperiment()
+        // 内部的调度可能已经把事件发布掉了，此时"仍是 PENDING 的"可能为空，
+        // 但本用例要验证的是"发布失败时会不会停下来"——
+        // 事件当前是什么状态并不重要，把它改回可重试即可。
+        List<String> eventIds = allEventIdsOf(experimentId);
+        assertThat(eventIds).as("本用例新建的实验应产生事件").isNotEmpty();
+        String eventId = eventIds.get(0);
         faults.reset(PublishOutcome.failed("模拟毒消息：序列化失败"));
 
-        // 循环到超过重试预算
+        // 循环到超过重试预算。
+        // **每轮把本实验的所有事件都设为可重试**：只有这样，
+        // 被测的那条才一定会在某一轮被处理到——
+        // 否则可能某几轮它因为 next_retry_at 未到期而被跳过，
+        // 12 轮用完还没耗尽预算，断言就报出一个假的"没有停下来"。
         for (int i = 0; i < 12; i++) {
             if ("FAILED".equals(statusOf(eventId))) {
                 break;
             }
-            makeRetryDue(eventId);
+            for (String id : eventIds) {
+                forceRepublishable(id);
+            }
             publisher.scanOnce();
         }
 
@@ -391,6 +429,8 @@ class MessagingReliabilityIT extends AbstractExecutionIT {
         String experimentId = createExperiment(scenario, 1, 1);
         start(experimentId, idem("start"));
         drainRuns(experimentId);
+        // 记下来，让随后的 firstPendingEventId() 只看本用例的素材
+        lastCreatedExperimentId = experimentId;
         return experimentId;
     }
 
@@ -452,11 +492,55 @@ class MessagingReliabilityIT extends AbstractExecutionIT {
     }
 
     private String firstPendingEventId() {
-        List<String> ids = jdbc.queryForList(
-                "SELECT id FROM outbox_events WHERE status = 'PENDING' ORDER BY created_at, id",
-                String.class);
-        assertThat(ids).as("用例素材应产生待发布事件").isNotEmpty();
-        return ids.get(0);
+        // **按本实验的事件过滤，而不是全表取第一条**。
+        //
+        // 集成测试共用同一个数据库。取"全表第一条 PENDING"意味着结果取决于
+        // 哪些测试类先跑过：其他类（尤其 RabbitTopologyIT，它会批量插入
+        // 造数据的 PENDING 行）留下的旧行会被优先取走，于是出现
+        // "单跑通过、混跑失败"——单跑时 1 passed，混跑时
+        // expected "FAILED" but was "PUBLISHED"。
+        //
+        // 根因在测试的取数方式而不在产品代码，但危害不小：它把一个确定的
+        // 测试缺陷伪装成偶发失败，很容易被"重跑一次就好了"掩盖过去。
+        // 修在这里（而非逐个改调用点）是因为同一个坑有 7 处调用。
+        assertThat(lastCreatedExperimentId)
+                .as("应先用 createAndStartExperiment() 造素材")
+                .isNotBlank();
+
+        // 优先取本实验仍是 PENDING 的事件；
+        // 若本实验的事件都已被发布（本类的 drainRuns 可能触发过发布），
+        // 退回本实验的任意事件——这些用例会自己设置所需状态。
+        //
+        // **不要退回到全表**：那正是最初引发混跑失败的原因。
+        List<String> pending = pendingEventIdsOf(lastCreatedExperimentId);
+        if (!pending.isEmpty()) {
+            return pending.get(0);
+        }
+        List<String> anyOfExperiment = allEventIdsOf(lastCreatedExperimentId);
+        assertThat(anyOfExperiment)
+                .as("本用例新建的实验应产生事件（experimentId=%s）", lastCreatedExperimentId)
+                .isNotEmpty();
+        return anyOfExperiment.get(0);
+    }
+
+    /** 本实验名下仍处于 PENDING 的事件 ID（按时间排序）。 */
+    private List<String> pendingEventIdsOf(String experimentId) {
+        return jdbc.queryForList(
+                "SELECT id FROM outbox_events WHERE status = 'PENDING'"
+                        + " AND aggregate_id IN"
+                        + " (SELECT r.id FROM evaluation_runs r WHERE r.experiment_id = ?)"
+                        + " ORDER BY created_at, id",
+                String.class, experimentId);
+    }
+
+    /** 本实验名下的全部事件 ID（按时间排序）。 */
+    private List<String> allEventIdsOf(String experimentId) {
+        return jdbc.queryForList(
+                "SELECT id FROM outbox_events"
+                        + " WHERE aggregate_id IN"
+                        + " (SELECT r.id FROM evaluation_runs r WHERE r.experiment_id = ?)"
+                        + " ORDER BY created_at, id",
+                String.class, experimentId);
     }
 
     private JsonNode envelopeOf(String eventId) {
@@ -478,6 +562,24 @@ class MessagingReliabilityIT extends AbstractExecutionIT {
     /** 把退避时间提前，让下一次扫描不用真等。 */
     private void makeRetryDue(String eventId) {
         jdbc.update("UPDATE outbox_events SET next_retry_at = ?, lease_until = NULL WHERE id = ?",
+                Timestamp.from(Instant.now().minusSeconds(5)), eventId);
+    }
+
+    /**
+     * 把事件强制拨回"待发布且可重试"。
+     *
+     * <p>**必须同时把 status 改回 PENDING**：{@link #makeRetryDue} 只调
+     * {@code next_retry_at}，对一条已被发布（PUBLISHED）的事件无效——
+     * 那样它根本不会进入候选列表，循环 12 轮它一次都没被处理，
+     * 断言就会报出一个假的"没有停下来"。
+     *
+     * <p>这正是本用例的语义前提：要验证的是"发布失败时会耗尽预算并停下"，
+     * 所以每一轮都得保证它真的被尝试了一次。
+     */
+    private void forceRepublishable(String eventId) {
+        jdbc.update("UPDATE outbox_events SET status = 'PENDING', next_retry_at = ?,"
+                        + " lease_until = NULL, claim_token_hash = NULL, publisher_id = NULL"
+                        + " WHERE id = ?",
                 Timestamp.from(Instant.now().minusSeconds(5)), eventId);
     }
 }

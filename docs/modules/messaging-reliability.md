@@ -1,4 +1,4 @@
-# 消息可靠性运维手册（TASK-011）
+# 消息可靠性运维手册（TASK-011 / TASK-013）
 
 面向**跑这套系统的人**：发布链路卡住了怎么办、积压怎么看、能不能手动补发。
 设计约束见 [`../architecture/06-reliability-design.md`](../architecture/06-reliability-design.md) 第 64-72 行。
@@ -11,6 +11,9 @@
    三个来源都会产生重复。去重在 `inbox_events`，重复**没有业务效果**。
 3. **不要用"消息发成功了"判断 Agent 跑成功了。** 发布成功只表示"消费者被唤醒了"；
    Agent 是否成功由 `evaluation_runs` 的终态和 Attempt 回执决定。
+4. **TASK-013 起，Worker 真的通过 RabbitMQ 消费了。** 消费失败按5s/30s/120s
+   三档有上限退避，档位用尽进 DLQ（`repopilot.events.dlq`），不再无限重投。
+   死信用 `GET/POST /internal/v1/messaging/dead-letters` 查询与受控重放。
 
 ## 1. 链路全貌
 
@@ -38,6 +41,34 @@ OutboxScheduler（每 1s）                      ← 数据库扫描是恢复通
 **领取与回写都是短事务，中间那次网络往返在事务外。** 这是 `06-reliability-design.md`
 "不持锁跨网络"的直接落地：否则一条 5 秒的慢消息会把整行锁住 5 秒，期间所有发布器卡在这行上。
 
+### 1.1 两条消费通道：消息与轮询（TASK-013-B）
+
+Worker 有两条通道能触发执行，**两者并存是有意的**：
+
+| 通道 | 作用 | 开关 | 默认 |
+| --- | --- | --- | --- |
+| RabbitMQ 消费 | 快速唤醒：消息到了就干活 | `WORKER_RABBITMQ_ENABLED` | **关** |
+| HTTP 轮询 | 兜底：消息丢了、broker 挂了、消息误入死信，任务最终仍会执行 | `WORKER_AUTOSTART` | 开 |
+
+**为什么消息通道默认关闭**：Worker 靠轮询就能完整工作，消息是**加速器**不是依赖。
+默认打开会让"没配 RabbitMQ"这种完全合法的部署直接起不来。
+
+**为什么不会重复执行**：两条通道最后都收敛到同一个 `run_once() → claim`。
+`claim` 在数据库里用 `FOR UPDATE SKIP LOCKED` + 租约决定"谁执行"，
+因此**同一任务只会被一个 Worker 领到一次**；另一条通道这一轮领到空，什么也不做。
+换句话说，重复的是**唤醒**，不是**执行**。
+
+**ACK 时机**：`claim` 成功返回**之后**才 ACK（见 `consumer.py::_handle`）。
+顺序是"Inbox 登记 → claim → ACK"，不是"ACK → 再干活"：
+先 ACK 会让"进程在干活前崩溃"变成消息永久丢失。
+
+**长任务不占用消费者**：回调里只做三件短事（登记、claim、ACK），真正的 CLI 执行在
+`claim` 之后由轮询线程异步推进。因此 `prefetch=1` 限制的是"同时在处理几条唤醒"，
+不是"同时跑几个任务"——一个跑 10 分钟的任务不会把消费者堵死 10 分钟。
+
+**重复投递**是正常边界：同一条消息投 N 次，Inbox 唯一键让第 2..N 次命中 `DUPLICATE`，
+仍然触发一次唤醒（上一轮可能 ACK 前崩溃），claim 幂等返回空。
+
 ## 2. 三个不可违反的约束
 
 | 约束 | 不这么做会怎样 |
@@ -48,15 +79,84 @@ OutboxScheduler（每 1s）                      ← 数据库扫描是恢复通
 
 ## 3. 指标
 
+### 3.1 发布侧（Outbox）
+
 | 指标 | 含义 | 告警建议 |
 | --- | --- | --- |
 | `repopilot.outbox.published` | 确认成功并标 PUBLISHED 的事件数（Counter） | 突然归零而 `pending` 上升 → 发布链路卡住 |
 | `repopilot.outbox.scan.errors` | 发布轮次抛异常的次数（Counter） | 持续增长 → 数据库或配置有问题 |
+| `repopilot.outbox.publish.failed` | 单条事件发布未成功的次数（Counter） | 持续增长 → 不可路由 / 连接故障 / confirm 超时 |
+| `repopilot.outbox.exhausted` | 重试达到上限被置 FAILED 的事件数（Counter） | 增长 → 有人需要重新投递 |
 | `repopilot.outbox.pending` | 仍待发布的事件数 | 持续增长 → MQ 不可用或发布器停摆 |
 | `repopilot.outbox.oldest.pending.age.seconds` | 最老的未发布事件已积压的秒数 | **最有效的单一信号**：>60s 说明链路有问题 |
+| `repopilot.outbox.failed` | FAILED 事件存量（永不自动清理） | >0 → 需人工介入 |
 
 `oldest.pending.age` 比 `pending` 数量更有用：积压 3 条可能是正常突发，
 积压 3 条且最老的等了 10 分钟一定是故障。
+
+### 3.2 消费侧（TASK-013-E）
+
+| 指标 | 含义 | 告警建议 |
+| --- | --- | --- |
+| `repopilot.consumer.consumed` | 消费成功并 ACK 的消息数（Counter） | — |
+| `repopilot.consumer.failed` | 消费失败的消息数（Counter） | 增长 → 消费者侧有系统性问题 |
+| `repopilot.consumer.retried` | 进入退避重试的消息数（Counter） | 占比升高 → 下游依赖抖动 |
+| `repopilot.consumer.dead_lettered` | 进入死信队列的消息数（Counter） | **增长即需人工介入** |
+| `repopilot.consumer.duplicate` | 命中 Inbox 去重被跳过副作用的消息数（Counter） | 突增 → 有消费者在 ACK 前崩溃 |
+| `repopilot.consumer.republished` | 退避到期后重新投递回业务交换机的消息数（Counter） | 与 `retried` 一起看，确认退避链路通畅 |
+| `repopilot.consumer.rejected` | 拒绝动作本身失败的消息数（Counter） | >0 → 连接不稳定，消息由 broker 重投 |
+| `repopilot.consumer.dlq.depth` | 死信队列**当前存量** | >0 → 有死信待排查 |
+| `repopilot.consumer.backlog.runs` | 待 Worker 领取的 Run 数（QUEUED） | 持续增长 → Worker 不足或消费者掉线 |
+| `repopilot.consumer.backlog.oldest.age.seconds` | 最老的待领取 Run 已等待的秒数 | >300s → 任务在排队等 Worker |
+| `repopilot.consumer.lease.expired` | 租约已过期但仍是 RUNNING 的 Attempt 数 | **持续 >0 → Worker 失联** |
+| `repopilot.consumer.delivery.latency.avg.seconds` | 消息端到端平均延迟（发布确认→Inbox 登记） | 升高 → 链路排队 |
+| `repopilot.consumer.delivery.latency.max.seconds` | 消息端到端**最坏**延迟 | 与均值并存：均值会掩盖卡住的那一条 |
+
+**为什么消费计数由消费者上报**：一条被 reject 进死信的消息，
+在 `outbox_events` 里仍然是 `PUBLISHED`（发布确实成功了），
+在 `inbox_events` 里也可能没有记录（它压根没走到登记那一步）。
+**只有 broker 和消费者知道它的真实结局**。后端能观测到的
+"外部信号"是队列深度与 DLQ 深度。
+
+**上报的是增量不是累计值**：累计值在消费者进程重启后会归零，
+后端累加就会让计数**倒退**。一个会倒退的计数器比没有计数器更危险，
+因为它看起来是对的。
+
+### 3.3 去重与清理
+
+| 指标 | 含义 | 告警建议 |
+| --- | --- | --- |
+| `repopilot.inbox.duplicate` | 命中 Inbox 去重的次数（Counter） | 突增 → 重复投递变多 |
+| `repopilot.inbox.payload.conflict` | 同 eventId 出现不同内容（Counter） | **出现即数据损坏，必须立刻查** |
+| `repopilot.retention.outbox.deleted` | 清理任务删除的 Outbox 行数（Counter） | 长期为 0 → 清理任务可能没跑 |
+| `repopilot.retention.inbox.deleted` | 清理任务删除的 Inbox 行数（Counter） | 同上 |
+| `repopilot.retention.errors` | 清理任务出现异常的轮次（Counter） | 增长 → 清理在失败 |
+| `repopilot.retention.last.run.epoch.seconds` | 最后一次执行清理的时间 | 距今过大 → 清理任务没被调度 |
+| `repopilot.retention.last.success.epoch.seconds` | 最后一次**成功**清理的时间 | 0 → 从未成功过 |
+| `repopilot.retention.last.failure.epoch.seconds` | 最后一次**失败**清理的时间 | 0 → 从未失败过 |
+
+**为什么"成功"与"失败"分开记**：合成一个布尔会丢掉排查方向。
+"清理任务从 3 天前就一直在失败"要查为什么失败；
+"3 天前成功过、之后没再跑"要查为什么没被调度——两者都显示"不健康"，
+但处置完全不同。
+
+### 3.4 指标暴露方式
+
+后端用 Micrometer 注册。当前 `application.yml` 只暴露 `health,info`，
+要抓指标需在部署配置里加：
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+```
+
+或者引入 `micrometer-registry-prometheus` 后暴露 `prometheus` 端点。
+
+**Worker 侧的累计消费统计**在 `GET /worker/status` 的 `consumer.totals` 字段里，
+由 Worker 主动上报给后端（`POST /internal/v1/messaging/consumer-stats`）。
 
 ## 4. 排查手册
 
@@ -104,16 +204,33 @@ rabbitmqctl bind_queue repopilot.run source_name=repopilot.events routing_key=ru
 
 ### 5.1 什么情况下消息会被隔离
 
-| 触发 | HTTP | 含义 | 该做什么 |
+**先分清两件不同的事**：
+
+| 类别 | 例子 | 去向 | 需要人管吗 |
 | --- | --- | --- | --- |
-| 同 `(consumerName, eventId)` 已有记录但 `payload_hash` 不同 | 409 | **数据损坏或上游 bug** | 停止重试。查两条消息的实际内容；确认哪条是对的再处理 |
-| 信封版本不受支持 | 400 `UNSUPPORTED_EVENT_VERSION` | 消费者比消息旧 | 升级消费者；不要 requeue |
-| 信封缺必填字段 | 400 `VALIDATION_ERROR` | 消息损坏 | 检查发布侧 |
+| **业务 FAIL** | Agent 跑失败了、评测不通过 | **业务状态**（`evaluation_runs.status=FAILED`），消息本身处理成功 | 否，看业务报表 |
+| **消息基础设施失败** | 契约错误、schema 不支持、payload 冲突、重试耗尽 | **DLQ**（`repopilot.events.dlq`） | **是**，要人工判断 |
 
-**这三类都不允许 requeue 重试。** 无限重试会把一条坏消息变成队列永久阻塞。
+把这两者混为一谈是排查困难的主要来源：业务失败会让消息"成功"消费掉，
+若把它也丢进 DLQ，DLQ 里就会塞满根本不需要重放的正常业务失败。
 
-**冲突为什么必须返回 409 而不是 200**：静默 ACK 会让数据损坏永远查不出来——
-生产者以为发出去了，消费者以为处理完了，没人知道两条消息不一样。
+**消息侧进入 DLQ 的触发条件**：
+
+| 触发 | 机制 | 该做什么 |
+| --- | --- | --- |
+| 信封 JSON 非法 | 消费者 `basic_reject(requeue=false)` | 查发布侧，通常是代码 bug |
+| `schemaVersion` 不受支持 | 同上 | 升级消费者或回退消息版本 |
+| 缺必填字段 / `payload_hash` 冲突 | 同上 | **停止重试**，确认哪条消息是对的 |
+| 退避三档用尽 | 同上（`x-retry-tier=3` 仍失败） | 先查依赖是否恢复，再受控重放 |
+| 再发布时缺 `x-original-routing-key` | 同上 | **不猜**：进 DLQ 等人确认 routing key |
+
+**这三类都不允许 requeue 重试。** 无限重试会把一条坏消息变成队列永久阻塞——
+这是 TASK-013 修掉的核心缺陷之一（此前用 `basic.nack(requeue=true)` 会把消息
+放回队尾，"取一条→放回→再取一条"会绕回队首重复读到同一条）。
+
+**DLQ 里能看到什么**：`x-death`（broker 记录的死信原因：哪个队列、因为什么、
+几次）、原始信封（逐字节保留）、`x-retry-tier`、`x-last-error`、`x-first-failed-at`。
+`x-death` 存在是"可追溯"的前提——没有它就无法知道一条死信是怎么死的。
 
 ### 5.2 人工重新投递
 
@@ -145,20 +262,29 @@ UPDATE outbox_events
 | 表 | 保留 | 理由 |
 | --- | --- | --- |
 | `outbox_events`（PUBLISHED） | 30 天 | 只为排查"某条消息什么时候发的"服务；业务真相在 Run/Job 行上 |
-| `outbox_events`（FAILED） | **不删** | 需要人工处理；删掉就等于把问题变成静默丢失 |
-| `inbox_events` | 90 天 | **不得短于 outbox 的最大重试窗口** |
+| `outbox_events`（PENDING / FAILED） | **永不自动删除** | PENDING 可能在重试窗口内；FAILED 是人工处理的唯一线索 |
+| `inbox_events` | 90 天（可配） | **不得短于 outbox 的最大重试窗口 + 消息最大重投窗口** |
 
-**inbox 的保留期必须覆盖 outbox 的最大重投窗口**，否则会出现这种事故：
-第 80 天清理了 inbox，第 85 天某条 FAILED 事件被人工重投，inbox 里已经没有记录，
-消费者认为这是新消息，重新执行了一遍已经完成过的业务。
+**TASK-013 起已实现自动清理**（`RetentionService`，定时 + 分批），
+不再是TASK-011 文档里说的"手工执行"。三条铁律：
 
-V1 未实现自动清理（避免在还没有生产数据量级概念时引入定时删除任务）。
-需要清理时按上面的期限**手工分批执行**，每次不超过 10000 行：
+1. **只删已完成且过期的。** Outbox 的判据是 `status='PUBLISHED'` **且 `published_at` 超保留期**，
+   不是 `created_at`——3 天前创建、今天才发布的事件刚发布，可能还有消费者没处理完。
+2. **Inbox 保留期必须显著长于消息最大重投窗口。**
+   退避最坏情况是 5+30+120 秒 ≈ 155 秒，Inbox 保留 90 天是它的**上万倍**。
+   若Inbox 先被清理，同一条消息重投时会被当成新消息，**已完成的业务会被重复执行**。
+3. **分批删除。** 每条 `DELETE` 带 `LIMIT`，每批独立短事务，
+   避免长事务锁住表、阻塞业务写入。批次大小可配（默认 500）。
+
+### 6.1 排查看被清理了什么
 
 ```sql
-DELETE FROM inbox_events WHERE processed_at < NOW() - INTERVAL 90 DAY LIMIT 10000;
-DELETE FROM outbox_events
- WHERE status = 'PUBLISHED' AND published_at < NOW() - INTERVAL 30 DAY LIMIT 10000;
+-- 待发布积压与最老事件年龄（Outbox 未清理前一直可查）
+SELECT COUNT(*) AS pending, MIN(created_at) AS oldest
+  FROM outbox_events WHERE status = 'PENDING';
+
+-- DLQ 深度（消息还在 broker 里，未被清理）
+docker exec repopilot-rabbitmq rabbitmqctl list_queues name messages | grep dlq
 ```
 
 ## 7. 配置项
@@ -200,14 +326,162 @@ eval "$(../tools/it-mysql.sh env)"
 ./mvnw -o failsafe:integration-test -Dit.test=MessagingReliabilityIT
 ```
 
-## 9. 尚未实现 / 已知限制
+## 9. 死信查询与受控重放（TASK-013）
+
+```bash
+BASE=http://127.0.0.1:18080
+TOKEN=local-demo-token
+
+# 查询（**不消费、不改变队列深度**）
+curl --noproxy '*' -s -H "Authorization: Bearer $TOKEN" \
+  "$BASE/internal/v1/messaging/dead-letters?limit=20"
+
+# 受控重放：必须显式列出 eventId
+curl --noproxy '*' -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"eventIds":["<eventId>"],"limit":10}' \
+  "$BASE/internal/v1/messaging/dead-letters/replay"
+```
+
+**刻意不提供全量重放**：`eventIds` 为空返回 400，而不是"那就把整个 DLQ 都重放一遍"。
+原因很直接——DLQ 里混着"数据损坏"和"依赖暂时不可用"两类消息，
+批量重放会把前者也放回业务链路。
+
+**重放保留原eventId**，因此会继续走 Inbox 去重：若这条事件此前已成功处理过，
+重放**不会造成重复业务副作用**（实测：重放后 Inbox 记录数不变）。
+
+**查询必须不改变队列**。实现上用 "hold 住全部 → 读完 → 统一放回"，
+而不是"取一条→nack 放回→再取一条"——后者因为 nack 把消息放回**队尾**，
+扫描会绕回队首重复命中同一条（实测：5 条消息 limit=20 得到 15 条，其中 10 条重复）。
+
+### 9.1 查询后**立刻**查深度会看到 0 —— 这不是消息丢了
+
+quorum 队列的 `basic.nack(requeue=true)` 是**异步重投**的：
+
+```
+basic_get(auto_ack=False) -> hold 住
+basic_nack(requeue=true)  -> 此刻查深度 = 0
+连接关闭                 -> 深度恢复为 1
+```
+
+所以在 `query()` 返回后的**几百毫秒内**用
+`rabbitmqctl list_queues` 查 DLQ，会看到深度 0，
+很容易误判成"死信被清空了"，甚至触发不必要的紧急处置。
+
+**处置顺序**：
+
+1. 先确认**最近是否有人调用过查询接口**（或跑过演示脚本 / 迁移工具）；
+2. 若有，等 1 秒左右再看；
+3. 仍为 0 才考虑"消息真的没了"。
+
+**绝对不要**在查询后立刻执行 `queue_purge` 或 `queue_delete`——
+此时消息正在重投途中，purge 会**真的把它丢掉**。
+
+### 9.2 保留期清理的运维入口
+
+清理是后台定时器，**成功时不打日志**（否则每小时一行噪声）。
+于是"一直在跑"与"早就停了"在日志里完全同形——都是空的。
+所以补了一个查询入口：
+
+```bash
+# 看状态：上次什么时候跑、删了多少、成功还是失败
+curl --noproxy '*' -s -H "Authorization: Bearer $TOKEN" \
+  "$BASE/internal/v1/messaging/retention"
+
+# 立即执行一轮（规则与定时器完全相同，不接受任何过滤条件）
+curl --noproxy '*' -s -X POST -H "Authorization: Bearer $TOKEN" \
+  "$BASE/internal/v1/messaging/retention/purge"
+```
+
+响应里三个时间戳**分开**：`lastRunEpochSecond`（跑过没有）、
+`lastSuccessEpochSecond`（成功过没有）、`lastFailureEpochSecond`（失败过没有）。
+它们回答的是三个不同的问题：
+
+| 现象 | 含义 | 先查什么 |
+| --- | --- | --- |
+| `lastRun=0` | 从未执行过 | 调度器是否启用、`app.repopilot.retention.*` 是否生效 |
+| `lastRun` 很旧、`lastSuccess` 也旧 | 停了 | 应用是否还活着、定时线程池是否被占满 |
+| `lastFailure` 比 `lastSuccess` 新 | 一直在失败 | 数据库锁、慢查询、删除条件 |
+
+**手动 purge 不能成为绕过规则的入口**：接口不接受任何条件参数，
+删什么完全由 `RetentionService` 决定——只删已发布且超期的 Outbox 行，
+PENDING / FAILED 永不自动删除。FAILED 的人工清理只在代码里
+（`purgeFailedOutbox`，强制要求显式时间下界），不暴露为 HTTP。
+
+### 9.3 消费计数由消费者上报
+
+`POST /internal/v1/messaging/consumer-stats`，**上报增量**。
+后端的 `outbox_events` / `inbox_events` 无法回答"这一小时消费了多少条"：
+
+| 消息结局 | `outbox_events` | `inbox_events` | 数据库能分辨吗 |
+| --- | --- | --- | --- |
+| 消费成功 | PUBLISHED | 有记录 | 能 |
+| 投递了但没人消费 | PUBLISHED | 无记录 | **不能**（与进 DLQ 同形） |
+| 消费失败进 DLQ | PUBLISHED | 通常无记录 | **不能**（与没人消费同形） |
+
+"进 DLQ"（要重放）与"没人消费"（要查消费者为什么没启动）在数据库里
+完全一样，所以这个计数只能由消费者自己上报。
+
+## 10. 重试拓扑迁移（headers v1 → topic v2）
+
+TASK-013 初版用 headers + `x-match=all` + `x-retry-tier` 分档，
+在真实 broker 上**分档完全失效**（`x-` 前缀字段不参与匹配，退化成全部按第一档回流）。
+现网若已部署该版本，用下面的工具受控迁移：
+
+```bash
+# 1. 只看现状（只读，不改任何实体）
+python tools/migrate_retry_topology.py --verify-only
+
+# 2. 排空旧队列并按档位重新投递到新拓扑
+python tools/migrate_retry_topology.py --phase drain
+
+# 3. 校验旧队列已排空、新拓扑已收到
+python tools/migrate_retry_topology.py --phase verify
+
+# 4. 确认无误后删除旧实体（**对仍有消息的队列会拒绝删除**）
+python tools/migrate_retry_topology.py --phase purge
+```
+
+**顺序不能换**：先删后迁 = 丢消息。工具会强制这个顺序，
+且 `verify` 在有积压时返回非 0 并阻止 `purge`。
+
+迁移保留 eventId 与全部诊断头，并打上 `x-migrated-from` 以便追溯。
+旧拓扑下消息被广播到全部 3 个队列（一变三），工具会**忠实按头里的档位
+把三份副本各自归位**——三份的 eventId 相同，去重后等价于一条。
+
+## 11. 尚未实现 / 已知限制
 
 | 项 | 说明 |
 | --- | --- |
-| **RabbitMQ 拓扑声明** | 代码只负责发布（routingKey = eventType）；exchange/queue/binding 的声明留给部署侧。本仓库 compose 里的 RabbitMQ 只配了健康探针，**没有预建绑定** |
-| **真实 RabbitMQ 集成验证** | 本地有 RabbitMQ 3.13.7 实跑核查记录（`reviews/rabbitmq-local-verification.md`），但 TASK-011 的自动化测试用的是故障注入替身，**没有对真实 broker 跑过端到端发布-确认** |
-| **Python Worker 消费端** | `POST /internal/v1/notifications/accept` 已实现并有鉴权，**但 Worker 进程尚未接入 RabbitMQ 订阅**——目前仍靠 `poller.py` 的周期领取。通知接口是"可被唤醒"的通道，不是"已经在用"的通道 |
-| **自动清理** | 见 §6，V1 手工执行 |
-| **DLQ / 隔离队列** | 409/400 的隔离目前只体现在 HTTP 状态码与日志，没有自动投递到独立 DLQ；运维靠日志与 §5.1 的查询发现 |
-| **告警接入** | Micrometer 指标已注册，但**未接告警平台**；§3 的阈值是建议值，需要接入时自行配置 |
-| **Outbox 无对外 API** | 有意为之：人工重投递走运维 SQL / 服务方法，避免用户绕过业务状态机直接改消息状态 |
+| **告警接入** | Micrometer 指标已注册（含 TASK-013-E 补齐的消费侧、延迟、积压、租约超时、清理结果），但**未接告警平台**；§3 的阈值是建议值 |
+| **DLQ 的独立保留策略** | DLQ 消息在 broker 里，**不受 `RetentionService` 管辖**（它只管数据库表）。DLQ 积压需要人工或独立策略处理。当前只提供 `repopilot.consumer.dlq.depth` 指标供告警，不自动清理 |
+| **退避档位不可配** | 5s/30s/120s 编译在 `RabbitTopology.RETRY_BACKOFF_MILLIS` 里。**改了会破坏已有队列**（`x-message-ttl` 是声明期参数，不一致会 `PRECONDITION_FAILED` 并关掉 channel），因此调整需要重建队列，属停机操作 |
+| **清理任务的调度器** | `RetentionService` 依赖 Spring 定时器，**单实例语义**。多副本部署会重复执行（幂等所以不会出错，但没有 leader 选举） |
+| **跨机房/多集群** | 未验证。DLX 与业务交换机在同一 vhost，跨集群需要 federation 或镜像，语义要重新验证 |
+| **消费统计的上报可靠性** | Worker 主动上报，**不保证送达**。上报失败的增量会在下一轮重报（宁可后端多计一次，也不让"处理了多少"对不上账），但 Worker 进程被杀时未上报的增量会丢失——所以后端计数是**下界**，不是精确值。精确对账看 `inbox_events` 行数 |
+| **端到端延迟的样本窗口** | 延迟指标只统计**最近 100 条已发布事件**。窗口之外的慢消息不计入。这是为了避免全表 JOIN 在大库上变贵，代价是"很久以前卡住的那条"不会出现在延迟指标里 |
+
+## 12. 本地验证怎么跑
+
+```bash
+# 真实 RabbitMQ + 真实 MySQL 的 9 场景端到端演示
+PY=/path/to/python RABBIT_PASSWORD=repopilot_dev_pwd bash tools/demo-task-013.sh
+
+# 重试拓扑迁移工具的自动化测试（真实 broker，含"拒绝删除非空队列"等安全断言）
+cd repopilot-worker
+WORKER_TEST_RABBIT_HOST=127.0.0.1 WORKER_TEST_RABBIT_USER=repopilot \
+WORKER_TEST_RABBIT_PASSWORD=repopilot_dev_pwd pytest tests/test_migrate_retry_topology.py -v
+
+# 后端全量（含真实 broker 的 RabbitTopologyIT）
+cd ../repopilot-server
+export JAVA_HOME=/c/Users/15334/.jdks/ms-21.0.10
+REPOPILOT_IT_DB_HOST=127.0.0.1 REPOPILOT_IT_DB_PORT=13306 \
+REPOPILOT_IT_DB_NAME=repopilot_it REPOPILOT_IT_DB_USER=repopilot \
+REPOPILOT_IT_DB_PASSWORD=repopilot_it_only \
+REPOPILOT_IT_RABBIT_HOST=127.0.0.1 REPOPILOT_IT_RABBIT_USER=repopilot \
+REPOPILOT_IT_RABBIT_PASSWORD=repopilot_dev_pwd ./mvnw -o verify
+```
+
+**注意环境变量前缀不同**：应用读 `MYSQL_*`，集成测试读 `REPOPILOT_IT_DB_*`。
+用错前缀会得到 `Communications link failure`——看起来像连不上库，
+实际是变量没被读取、退回了默认值 `root@localhost:3306`。

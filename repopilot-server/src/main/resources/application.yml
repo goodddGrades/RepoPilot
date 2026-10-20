@@ -118,6 +118,37 @@ repopilot:
     scan-interval-ms: 2000
     scheduler-enabled: true
 
+# TASK-013：Outbox 发布与保留期。
+#
+# 前缀是 **app.repopilot** 而不是 repopilot —— 与 OutboxPublisherService /
+# OutboxScheduler / RetentionService 里的 @Value("${app.repopilot...}") 一致。
+# TASK-011 把这些参数写成了 app.repopilot.*，而本文件里当时只有 repopilot.*
+# （storage/trace/worker），于是**所有 outbox 参数都在吃 @Value 里的默认值**：
+# 改 yml 不会有任何效果，而日志与文档都让人以为改了。这正是"配置看起来存在
+# 但实际不生效"的典型。保持两处前缀一致，否则同类问题还会再发生。
+app:
+  repopilot:
+    outbox:
+      # 发布循环节拍；领取在短事务内完成，网络 IO 在事务外
+      poll-interval-ms: 1000
+      # 单次发布的租约：确认回写必须租约有效且 claimToken 匹配（fencing）
+      lease-seconds: 30
+      # 有限重试上限。超过后置 FAILED 等人工重新投递，**永不自动删除**
+      max-attempts: 8
+      batch-limit: 50
+    retention:
+      # Outbox 保留天数：只清理已PUBLISHED 且超期的行。
+      # PENDING / FAILED 永不自动删除——它们是排障与人工重放的唯一线索。
+      outbox-days: ${REPOPILOT_RETENTION_OUTBOX_DAYS:7}
+      # Inbox 是幂等闸门：记录被删后同一条消息再投会被当作新消息重新执行副作用。
+      # 因此必须显著长于 Outbox 重试窗口能覆盖的时间跨度，默认 30 天。
+      inbox-days: ${REPOPILOT_RETENTION_INBOX_DAYS:30}
+      # 分批删除：一次删光百万行会持锁数分钟并阻塞所有写入
+      batch-size: ${REPOPILOT_RETENTION_BATCH_SIZE:500}
+      max-batches-per-run: 20
+      interval-ms: 3600000
+      initial-delay-ms: 600000
+
 logging:
   level:
     root: INFO

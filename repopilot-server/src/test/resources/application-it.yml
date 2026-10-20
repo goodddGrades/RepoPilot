@@ -48,9 +48,47 @@ repopilot:
     cleanup:
       # 关闭后台清理：用例直接调用服务方法，避免后台线程在断言过程中删文件
       enabled: false
+  retention:
+    # 保留期清理由用例显式调用；关掉定时器避免它在断言中途删掉待检查的行
+    interval-ms: 3600000
+    initial-delay-ms: 3600000
+
+# TASK-013：关闭 Outbox 的后台发布循环。
+#
+# **为什么必须关**：这个循环以 1 秒节拍扫描全表并发布 PENDING 事件。
+# 它会抢走**别的用例**刚插入的 PENDING 记录并发布掉，于是
+# "这条事件还没被发布"这类断言偶发失败——而单独跑那个用例却通过。
+#
+# 这种"混跑失败、单跑通过"的失败模式最难查：它看起来像产品缺陷，
+# 实际是测试环境里有个后台线程在改被测对象。
+#
+# 注意前缀是 **app.repopilot**（与 @Value 里的写法一致），
+# 写成 repopilot.outbox 会被静默忽略——那正是"配置看起来存在但实际不生效"。
+# 需要发布的用例都显式调用 publisher.scanOnce()，不依赖后台循环。
+app:
+  repopilot:
+    outbox:
+      scheduler-enabled: false
+
+# TASK-013：RabbitTopologyIT 需要真实 broker。
+#
+# 这些变量**没有默认值**：缺失时 Spring 启动会因占位符无法解析而失败，
+# 而测试类本身用 @EnabledIfEnvironmentVariable 整体跳过。
+# 两者分工明确：类级跳过 = "这台机器没有 broker，不测"；
+# 配置缺失报错 = "你说要测但没给连接信息"，是配置错误而不是跳过理由。
+spring.rabbitmq.host: ${REPOPILOT_IT_RABBIT_HOST:}
+spring.rabbitmq.port: ${REPOPILOT_IT_RABBIT_PORT:5672}
+spring.rabbitmq.username: ${REPOPILOT_IT_RABBIT_USER:}
+spring.rabbitmq.password: ${REPOPILOT_IT_RABBIT_PASSWORD:}
+spring.rabbitmq.publisher-confirm-type: correlated
+spring.rabbitmq.publisher-returns: true
+spring.rabbitmq.connection-timeout: 5s
 
 logging:
   level:
     root: WARN
     com.repopilot: INFO
     org.springframework.test: WARN
+    # 拓扑声明的 WARN 是真实信息（队列参数不符会被删除重建），
+    # 但在测试里刷屏会淹没真正的失败信息
+    com.repopilot.common.reliability.messaging: INFO

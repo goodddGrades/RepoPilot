@@ -14,13 +14,31 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """进程级配置（不可变，进程启动时读入一次）。"""
+    """进程级配置（不可变，进程启动时读入一次）。
+
+    关于 ``validation_alias`` 与构造参数的关系（TASK-013 实测踩到的坑）：
+
+    pydantic-settings 里，一旦字段声明了 ``validation_alias``，
+    **构造参数必须用别名**（即 ``WORKER_RABBITMQ_ENABLED``）才生效；
+    用字段名传参会被静默忽略、退回默认值。
+    实测：``Settings(autostart=True).autostart`` 仍是 ``False``，
+    而 ``Settings(worker_id="x")``（该字段没有 alias）正常。
+    也就是说"看起来传进去了、实际没生效"，不报错、不告警。
+
+    测试里要覆盖配置，必须走环境变量（本仓库的 ``make_settings`` 夹具
+    正是这么做的），或者用 ``populate_by_name=True`` 让字段名也能用。
+    这里显式开启 ``populate_by_name``：它让两种写法都有效，
+    消除"必须记住该用哪个名字"的隐性负担。
+    """
 
     model_config = SettingsConfigDict(
         env_file=("../.env", ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        # 允许用字段名构造，而不仅仅是别名。没有这一行时
+        # Settings(autostart=True) 会被静默忽略——配置看起来设了、实际没设。
+        populate_by_name=True,
     )
 
     # ---- 服务标识 ----
@@ -108,6 +126,33 @@ class Settings(BaseSettings):
     rabbitmq_port: int = Field(default=5672, validation_alias="RABBITMQ_PORT")
     rabbitmq_user: str = Field(default="repopilot", validation_alias="RABBITMQ_USER")
     rabbitmq_password: str = Field(default="", validation_alias="RABBITMQ_PASSWORD", repr=False)
+
+    # ---- RabbitMQ 消费（TASK-013）----
+    #
+    # 默认**关闭**：Worker 靠 HTTP 轮询也能完整工作，消息只是加速器。
+    # 默认打开会让"没配 RabbitMQ"的部署直接起不来，而那本来是个合法配置。
+    rabbitmq_enabled: bool = Field(default=False, validation_alias="WORKER_RABBITMQ_ENABLED")
+    # 队列名必须与 Java 侧 RabbitTopology 声明的一致。不同的 Worker 实例
+    # 应订阅不同队列（run.ready / evaluation.ready），靠 binding 分流而不是
+    # 抢同一条消息——抢同一条会让"一个实例只能干一种活"变成隐式约束。
+    rabbitmq_queue: str = Field(
+        default="repopilot.run.ready", validation_alias="WORKER_RABBITMQ_QUEUE")
+    rabbitmq_vhost: str = Field(default="/", validation_alias="WORKER_RABBITMQ_VHOST")
+    # prefetch=1：未处理的消息留在 broker 而不是客户端，进程崩溃才能自动回队。
+    # 调高它会让消息在客户端排队，断连时一起丢失——看起来"已投递"实际永不处理。
+    rabbitmq_prefetch: int = Field(default=1, validation_alias="WORKER_RABBITMQ_PREFETCH")
+    rabbitmq_heartbeat: int = Field(default=30, validation_alias="WORKER_RABBITMQ_HEARTBEAT")
+
+    # ---- Inbox 登记（TASK-013-C）----
+    #
+    # Inbox 的去重键是 (consumer_name, event_id)，**不是** Worker 实例 ID。
+    # 用实例 ID 会让每个 Worker 实例都把同一条事件当成新事件登记一次，
+    # 去重形同虚设；用固定名字才能保证"一条事件在一个逻辑消费者上只处理一次"。
+    #
+    # 与后端 OpenAPI 里示例值（worker-run / worker-eval）保持一致：
+    # 执行 Worker 与评测 Worker 消费同一事件是两次正常投递，不是重复。
+    inbox_consumer_name: str = Field(
+        default="worker-run", validation_alias="WORKER_INBOX_CONSUMER_NAME")
 
     minio_host: str = Field(default="127.0.0.1", validation_alias="MINIO_HOST")
     minio_api_port: int = Field(default=9000, validation_alias="MINIO_API_PORT")

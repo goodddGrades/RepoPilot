@@ -1,6 +1,7 @@
 package com.repopilot.common.reliability.mapper;
 
 import com.repopilot.common.reliability.entity.InboxEvent;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -63,4 +64,38 @@ public interface InboxEventMapper {
             SELECT COUNT(*) FROM inbox_events WHERE consumer_name = #{consumerName}
             """)
     long countByConsumer(@Param("consumerName") String consumerName);
+
+    // ---- TASK-013-D：保留期清理 ----
+
+    /**
+     * 分批删除超过去重窗口的行。
+     *
+     * <p><b>这张表是幂等闸门，删除窗口必须保守</b>：
+     * 记录被删后，同一条消息再投一次会被当作新消息<b>重新执行副作用</b>。
+     * 因此保留期由 {@code app.repopilot.retention.inbox-days} 控制，
+     * 默认 30 天，远大于 Outbox 重试上限（8 次）× 退避（最长 300s）能覆盖的
+     * 时间跨度——也就是说，只要事件还在重投窗口内，去重记录就一定还在。
+     *
+     * <p>用 {@code created_at} 而非 {@code processed_at}：两者都在同一事务写入、
+     * 相差微秒级，用 {@code created_at} 与唯一键的统计口径一致，便于对账。
+     *
+     * <p>带 {@code LIMIT} 分批，避免一次删光导致长事务与锁竞争。
+     */
+    @Delete("""
+            DELETE FROM inbox_events
+             WHERE created_at < #{cutoff}
+             LIMIT #{limit}
+            """)
+    int deleteOlderThan(@Param("cutoff") java.time.Instant cutoff, @Param("limit") int limit);
+
+    /** 某时间点之前的行数：清理测试与运维核对用。 */
+    @Select("""
+            <script>
+            SELECT COUNT(*) FROM inbox_events
+             <where>
+               <if test="before != null">AND created_at &lt; #{before}</if>
+             </where>
+            </script>
+            """)
+    long countOlderThan(@Param("before") java.time.Instant before);
 }

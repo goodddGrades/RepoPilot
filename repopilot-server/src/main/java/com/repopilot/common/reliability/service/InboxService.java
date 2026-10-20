@@ -44,10 +44,14 @@ public class InboxService {
 
     private final InboxEventMapper inbox;
     private final TransactionTemplate tx;
+    /** TASK-013：按结果分类计数，让"重复投递"变成可观测指标而不是只能看日志。 */
+    private final java.util.function.Consumer<Outcome> outcomeObserver;
 
-    public InboxService(InboxEventMapper inbox, PlatformTransactionManager transactionManager) {
+    public InboxService(InboxEventMapper inbox, PlatformTransactionManager transactionManager,
+                        java.util.function.Consumer<Outcome> outcomeObserver) {
         this.inbox = inbox;
         this.tx = new TransactionTemplate(transactionManager);
+        this.outcomeObserver = outcomeObserver == null ? o -> { } : outcomeObserver;
     }
 
     /** 登记结果。 */
@@ -75,6 +79,15 @@ public class InboxService {
      * 在通知层重复判断只会造出两套可能不一致的规则。
      */
     public Result accept(String consumerName, JsonNode envelope) {
+        Result result = doAccept(consumerName, envelope);
+        // 指标在事务外记：观测不该影响幂等语义。
+        // 重复命中的计数尤其重要——它突然上涨意味着上游在重复投递，
+        // 或者有消费者在 ACK 前反复崩溃。
+        outcomeObserver.accept(result.outcome());
+        return result;
+    }
+
+    private Result doAccept(String consumerName, JsonNode envelope) {
         EventEnvelope parsed = EventEnvelope.fromOutbox(envelope);
 
         if (parsed.eventId() == null || parsed.eventId().isBlank()) {

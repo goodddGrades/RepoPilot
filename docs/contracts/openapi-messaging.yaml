@@ -1,26 +1,37 @@
 openapi: 3.1.0
 info:
-  title: RepoPilot 消息可靠性 API（TASK-011）
-  version: 1.0.0
+  title: RepoPilot 消息可靠性 API（TASK-011 / TASK-013）
+  version: 1.1.0
   description: |
-    本文件描述 TASK-011 在真实工程中落地的消息侧接口：**通知唤醒入口**。
+    本文件描述消息侧在真实工程中落地的接口：
+
+    * **通知唤醒入口**（TASK-011）
+    * **死信查询与受控重放、消费统计上报、保留期运维入口**（TASK-013）
 
     公共组件（统一响应信封、分页、ULID、Idempotency-Key）复用 `openapi-common.yaml`，
     事件信封结构见 `event-envelope.schema.json`，此处不重复定义。
 
     对应实现：
     - `common/reliability/web/NotificationController`
+    - `common/reliability/web/DeadLetterController`、`common/reliability/service/DeadLetterService`
+    - `common/reliability/web/ConsumerStatsController`、`common/reliability/service/ConsumerMetrics`
+    - `common/reliability/web/RetentionController`、`common/reliability/service/RetentionService`
     - `common/reliability/service/InboxService`、`common/reliability/mapper/InboxEventMapper`
     - `common/reliability/service/OutboxPublisherService`、`common/reliability/service/OutboxScheduler`
     - 可靠性约束见 `docs/architecture/06-reliability-design.md` 第 64-72 行
+    - 消息拓扑见 `docs/architecture/05-event-contract.md`
 
-    **这个接口不创建 Run/Job，也不执行任何长任务。** 它只做短事务的 inbox 去重登记，
+    **通知接口不创建 Run/Job，也不执行任何长任务。** 它只做短事务的 inbox 去重登记，
     收到 200 后消费者唤醒本地领取循环，真正的任务仍走数据库领取协议
     （`POST /internal/v1/work/claim`）。让通知入口顺手跑任务意味着在一个 HTTP 请求里
     持有 MQ 消息的未确认状态，一个慢任务就会占满 prefetch 配额并拖垮整个消费者。
 
     **Outbox 没有对外写接口，这是有意的**：Outbox 行由业务事务在同一事务内写入，
     人工重新投递走运维通道而非用户 API，避免用户绕过业务状态机直接改消息状态。
+
+    **TASK-013 新增的四个入口都在 `/internal/v1` 下**，与通知入口共用 `WorkerAuthFilter`
+    （Bearer 凭证 + 恒定时间比较）。死信重放与保留期清理是**能改变数据**的运维动作，
+    绝不能开无鉴权的公开接口。
 servers:
   - url: /
 
@@ -93,6 +104,211 @@ paths:
           description: |
             同 `(consumerName, eventId)` 已有记录但 `payloadHash` 不同
             （`RESOURCE_CONFLICT`）。这是数据损坏或上游 bug，必须停止重试并告警。
+          content:
+            application/json:
+              schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+
+  /internal/v1/messaging/dead-letters:
+    get:
+      operationId: queryDeadLetters
+      summary: 查看死信队列（只读，不消费消息）
+      description: |
+        读取 `repopilot.events.dlq` 里最多 `limit` 条死信并返回诊断摘要。
+
+        **实现方式决定了它有一条反直觉的时序特性**：服务端先把消息
+        `basicGet` 出来但**不 ACK**（此时它们在 unacked 状态，
+        `basic_get` 不会再返回它们），读完再统一 `basicNack(requeue=true)` 放回。
+        quorum 队列的重投是**异步**的——调用返回后立刻查队列深度会看到 **0**，
+        连接关闭后深度才恢复。**这不是消息丢了**。因此：
+
+        * 绝不要在查询后立刻 `purge` 该队列（会把重投中的消息真丢掉）；
+        * 任何"查完深度是不是 0"的断言都要等稳定态（≥700ms）。
+
+        **查询不改变消息内容与顺序**，但会短暂占用这些消息的投递权，
+        因此不要在高频探针里调用它——DLQ 深度请用指标 `repopilot.consumer.dlq.depth`。
+      security:
+        - WorkerBearer: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: 最多返回多少条摘要。只影响本次读取，不删除任何消息。
+      responses:
+        '200':
+          description: 死信摘要列表（可能为空数组）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/DeadLetterSummary' }
+        '401':
+          description: 缺少或无效的 Worker 凭证
+          content:
+            application/json:
+              schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+
+  /internal/v1/messaging/dead-letters/replay:
+    post:
+      operationId: replayDeadLetters
+      summary: 受控重放指定死信（必须显式列出 eventId）
+      description: |
+        把指定 `eventId` 的死信重新发布到业务交换机，**保留原 eventId**，
+        并打上 `x-replayed-at` 诊断头（重放时间）。`x-death` 与档位头
+        原样保留——它们记录了这条消息是怎么走到死信的，重放不该擦掉证据。
+
+        ## 三条硬约束
+
+        1. **不支持全量重放。** `eventIds` 为空时返回 400。全量重放会让一个
+           上游 bug 造成的死信批量回流，把同一个故障放大一遍。
+        2. **必须保留原 eventId。** 换 ID 会让同一条业务事实被当成两次通知，
+           在消费者侧触发两次副作用；保留 ID 才能继续命中 Inbox 去重。
+        3. **重放后仍走完整的 Inbox 去重与版本校验。** 重放不是"跳过校验的旁路"，
+           它只是"再投一次"。
+
+        单次请求的 `eventIds` 数量受服务端上限约束（`MAX_REPLAY_BATCH`），
+        超过返回 400。部分 ID 不存在时**不报错**，在 `reasons` 里逐条说明。
+      security:
+        - WorkerBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplayRequest' }
+      responses:
+        '200':
+          description: 重放结果（含逐条跳过原因）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ReplayResult' }
+        '400':
+          description: |
+            `eventIds` 为空（拒绝全量重放）、含空白 ID、或数量超过单次上限。
+          content:
+            application/json:
+              schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+        '401':
+          description: 缺少或无效的 Worker 凭证
+          content:
+            application/json:
+              schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+
+  /internal/v1/messaging/consumer-stats:
+    post:
+      operationId: reportConsumerStats
+      summary: 消费者上报消费统计增量
+      description: |
+        消费结果的真值**只在消费者进程里**。一条被 reject 进死信的消息，
+        在 `outbox_events` 里仍是 `PUBLISHED`（发布确实成功了），
+        在 `inbox_events` 里也可能没有记录（它没走到登记那一步）——
+        "进 DLQ"与"消息躺在队列里没人管"在数据库里**完全同形**，
+        所以消费侧的精确计数只能由消费者上报。
+
+        **必须上报增量，不能上报累计值。** 累计值在消费者进程重启后归零，
+        后端累加会让计数**倒退**；一个会倒退的计数器比没有计数器更危险。
+
+        这是纯观测端点：**只累加计数，不改任何业务状态**。
+        上报失败不会影响消费——缺字段按 0 处理，缺 `consumerName` 返回
+        `accepted=false` 而不是报错，避免一次监控抖动变成消息处理批量失败。
+      security:
+        - WorkerBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConsumerStatsRequest' }
+      responses:
+        '200':
+          description: 已接收（`accepted=false` 表示缺少 consumerName，计数被丢弃）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ConsumerStatsResult' }
+        '401':
+          description: 缺少或无效的 Worker 凭证
+          content:
+            application/json:
+              schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+
+  /internal/v1/messaging/retention:
+    get:
+      operationId: getRetentionStatus
+      summary: 查看保留期清理状态（最后执行时间、删除量、结果）
+      description: |
+        清理任务是后台定时器，**成功时不留日志**（否则每小时刷一行）。
+        于是"一直在跑"和"早就停了"在日志里长得一样。这个接口回答
+        "上次清理是什么时候、删了多少、成功还是失败"。
+
+        `lastSuccessEpochSecond` 与 `lastFailureEpochSecond` **分开返回**：
+        "一直在失败"（查为什么失败）与"很久没被调度"（查为什么没跑）
+        是两种不同的故障，合并成一个布尔会把排查方向丢掉。
+        取值为 0 表示从未发生。
+      security:
+        - WorkerBearer: []
+      responses:
+        '200':
+          description: 清理状态快照
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/RetentionView' }
+        '401':
+          description: 缺少或无效的 Worker 凭证
+          content:
+            application/json:
+              schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
+
+  /internal/v1/messaging/retention/purge:
+    post:
+      operationId: runRetentionPurge
+      summary: 立即执行一轮清理（与定时器完全相同的规则）
+      description: |
+        调用与定时器**完全相同**的 `RetentionService.purgeExpired()`：
+        只删 `status='PUBLISHED'` 且 `published_at` 超保留期的 Outbox 行，
+        以及超过 Inbox 保留期的行。**PENDING 与 FAILED 永不自动删除**——
+        它们是业务事实与排障证据的唯一副本。
+
+        手动触发**不能**成为绕过这条铁律的入口：本接口不接受任何过滤条件。
+
+        幂等：没有可删的行时删除量为 0，重复调用不报错也不多删。
+        返回执行**后**的快照，删除量在 `lastOutboxDeleted / lastInboxDeleted`。
+      security:
+        - WorkerBearer: []
+      responses:
+        '200':
+          description: 执行后的状态快照
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/RetentionView' }
+        '401':
+          description: 缺少或无效的 Worker 凭证
           content:
             application/json:
               schema: { $ref: './openapi-common.yaml#/components/schemas/Error' }
@@ -183,3 +399,141 @@ components:
         resourceId:
           type: [string, 'null']
           description: 信封的 `aggregateId`，仅供日志与指标分组，消费者不应据此取数据。
+
+    DeadLetterSummary:
+      type: object
+      description: 一条死信的诊断摘要。**只读取诊断字段，不解析业务正文。**
+      properties:
+        eventId:
+          type: [string, 'null']
+          description: 从消息头/信封取到的 eventId。取不到时为 null——**不猜**。
+        eventType:
+          type: [string, 'null']
+          description: 原始 routing key（业务交换机上 routing key 就是 eventType）。
+        aggregateId:
+          type: [string, 'null']
+        routingKey:
+          type: [string, 'null']
+          description: broker 记录的原 routing key。为空表示消息没有 envelope（裸消息）。
+        retryTier:
+          type: integer
+          description: 已消耗的退避档位（0 表示没进过重试队列）。
+        lastError:
+          type: [string, 'null']
+          description: 最后一次失败原因，取自 `x-last-error` 头。
+        firstFailedAt:
+          type: [string, 'null']
+          description: 首次失败时间（ISO-8601），取自 `x-first-failed-at`。
+        queuedAt:
+          type: [string, 'null']
+          description: broker 的入队时间。**注意它可能为 null**——AMQP 0-9-1 不保证
+            每条消息都带 timestamp，缺失时不能补一个"看起来合理"的时间。
+
+    ReplayRequest:
+      type: object
+      required: [eventIds]
+      properties:
+        eventIds:
+          type: array
+          minItems: 1
+          items: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+          description: |
+            要重放的事件 ID。**必须显式列出**：空数组会被拒绝（400），
+            本接口不提供全量重放。
+        limit:
+          type: integer
+          minimum: 1
+          description: 单次重放上限，缺省取服务端的 `MAX_REPLAY_BATCH`。
+
+    ReplayResult:
+      type: object
+      required: [requested, replayed, skipped, replayedEventIds, reasons]
+      properties:
+        requested: { type: integer, description: 请求重放的条数 }
+        replayed: { type: integer, description: 实际重放成功的条数 }
+        skipped: { type: integer, description: 未重放的条数（不存在或超上限） }
+        replayedEventIds:
+          type: array
+          items: { type: string }
+          description: 实际重放成功的 eventId。
+        reasons:
+          type: array
+          items: { type: string }
+          description: |
+            逐条跳过原因。**部分 ID 不存在不是错误**：DLQ 里的消息可能已被
+            其他运维动作处理掉，此时在 reasons 里说明即可，不应让整个请求失败。
+
+    ConsumerStatsRequest:
+      type: object
+      required: [consumerName, stats]
+      properties:
+        consumerName:
+          type: string
+          description: 逻辑消费者名（`worker-run` / `worker-eval`），用于指标打标签。
+        stats:
+          type: object
+          additionalProperties: { type: integer, minimum: 0 }
+          description: |
+            **增量**计数，不是累计值。已知键：
+            `acked`、`failed`、`retried`、`deadLettered`、`duplicates`、
+            `republished`、`rejectFailed`。未知键忽略；负数按 0 处理
+            （一个明显不合理的负增量不如当作没上报）。
+
+    ConsumerStatsResult:
+      type: object
+      required: [accepted]
+      properties:
+        accepted:
+          type: boolean
+          description: |
+            `false` 表示请求缺少 `consumerName`，本次计数被丢弃。
+            缺字段不返回 4xx：观测通道坏了不该让消费跟着坏。
+    StatusCount:
+      type: object
+      description: 某一状态的事件数。用于运维查询，不参与业务判断。
+      properties:
+        status:
+          type: string
+          enum: [PENDING, PUBLISHED, FAILED]
+        total:
+          type: integer
+          minimum: 0
+
+    RetentionView:
+      type: object
+      description: 保留期清理的状态快照。
+      properties:
+        outboxByStatus:
+          type: array
+          items: { $ref: '#/components/schemas/StatusCount' }
+          description: 各状态的 Outbox 行数。**FAILED 长期不为 0 是正常的**——它等人处理。
+        outboxRetentionDays:
+          type: integer
+          description: 已发布事件的保留天数。
+        inboxRetentionDays:
+          type: integer
+          description: |
+            Inbox 记录保留天数。必须显著长于消息最大重投窗口
+            （退避最坏 5+30+120 ≈ 155 秒）：Inbox 记录被删后，
+            同一条消息再投会被当作新消息**重新执行副作用**。
+        batchSize:
+          type: integer
+          description: 单批删除行数。分批是为了不长时间持锁。
+        lastOutboxDeleted:
+          type: integer
+          description: 最后一轮删除的 Outbox 行数。
+        lastInboxDeleted:
+          type: integer
+          description: 最后一轮删除的 Inbox 行数。
+        lastRunResult:
+          type: string
+          description: 最后一轮的人类可读结果，例如 `成功：Outbox 3 行，Inbox 0 行（截止 ...）`。
+        lastRunEpochSecond:
+          type: integer
+          description: 最后一轮执行的 epoch 秒（无论成败）；0 表示从未执行。
+        lastSuccessEpochSecond:
+          type: integer
+          description: 最后一次成功的 epoch 秒；0 表示从未成功。
+        lastFailureEpochSecond:
+          type: integer
+          description: 最后一次失败的 epoch 秒；0 表示从未失败。
