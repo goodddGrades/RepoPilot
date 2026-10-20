@@ -319,9 +319,10 @@ TTL 必须 ≥ capacity / refill，否则空闲客户端周期性拿回满桶
 
 ## 5. 提交范围与 Git 状态
 
-见 §7（提交在报告写完后执行，因此这里只描述范围，最终计数以推送前那次 `rev-list` 为准）：
+见 §10（提交在报告写完后执行，因此这里只描述范围，最终计数以推送前那次 `rev-list` 为准）：
 
-- **本次提交共 58 个文件：35 新增 / 22 修改 / 1 删除，`+4488 / −47`。**
+- **本次任务共 58 个文件：35 新增 / 22 修改 / 1 删除，`+4488 / −47`。**
+- 两个提交：`1306089`（实现 + 测试 + CI + 配置）、`4f436c7`（文档）。
 - Java：`pom.xml`、`ratelimit/token_bucket.lua`、`common/ratelimit/*`（11 个类）、
   `RedisHealthProbe.java`（替代删除的 `RedisReservedProbe.java`）、`GlobalExceptionHandler.java`、
   `application.yml`、`application-it.yml`、8 个测试类、`RateLimitIT.java`。
@@ -384,8 +385,9 @@ TTL 必须 ≥ capacity / refill，否则空闲客户端周期性拿回满桶
 | --- | --- |
 | 分支 | `develop` |
 | 基线 | `origin/develop` |
-| 待推送 | 见 §7 与实际 `git rev-list`（本报告自身提交计入范围） |
-| 工作区 | 提交后干净 |
+| TASK-014 提交 | `1306089`（实现）、`4f436c7`（文档） |
+| 待推送 | 截至 `4f436c7` 共 **17** 个提交（含 TASK-013 遗留的 15 个）。本报告若再补一次提交会变成 18，**最终数量以推送前那次 `rev-list` 为准** |
+| 工作区 | 提交后干净（`git status --porcelain` 为空） |
 | 敏感信息 | 新增文件中无硬编码凭据；`.env.example` 仅新增空值占位 |
 | 构建产物 | `target/`、`dist/`、`.venv/` 均已被 `.gitignore` 排除 |
 | CI | **未运行**（未 push） |
