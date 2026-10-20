@@ -307,12 +307,38 @@ class WorkerRuntime:
             "scenario": runner_detail.get("scenario"),
             "evaluators": sorted(self.evaluators),
             "judge": judge_detail,
+            # 限流状态：阈值 + 三类计数。不做成独立监控系统，直接挂在状态接口上，
+            # 演示与排障都能看到"放行了多少、拒了多少、Redis 故障几次"。
+            "rateLimit": self._rate_limit_status(),
             "backgroundRunning": self._thread is not None and self._thread.is_alive(),
             # 消费状态如实汇报：enabled=false 不是故障，不能显示成"连接正常"。
             "consumer": self.consumer.status() if self.consumer is not None else {
                 "enabled": False, "connected": False, "running": False},
             "lastSummary": self.last_summary,
         }
+
+    def _rate_limit_status(self) -> dict[str, Any]:
+        """限流策略与计数快照。"""
+        from app.ratelimit.metrics import METRICS
+
+        settings = self.settings
+        enabled = bool(getattr(settings, "rate_limit_enabled", False))
+        detail: dict[str, Any] = {
+            "enabled": enabled,
+            "environment": getattr(settings, "rate_limit_environment", None),
+            "failureMode": getattr(settings, "rate_limit_failure_mode", None),
+            "dimension": getattr(settings, "judge_rate_limit_dimension", None),
+            "counters": METRICS.snapshot(),
+        }
+        if enabled:
+            detail["policy"] = {
+                "name": "judge-model",
+                "capacity": getattr(settings, "judge_rate_limit_capacity", None),
+                "refillPerSecond": getattr(settings, "judge_rate_limit_refill_per_second", None),
+                "costPerRequest": getattr(settings, "judge_rate_limit_cost", None),
+                "ttlSeconds": getattr(settings, "judge_rate_limit_ttl_seconds", None),
+            }
+        return detail
 
 
 _runtime: WorkerRuntime | None = None

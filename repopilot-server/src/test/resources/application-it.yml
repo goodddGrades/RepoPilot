@@ -84,6 +84,51 @@ spring.rabbitmq.publisher-confirm-type: correlated
 spring.rabbitmq.publisher-returns: true
 spring.rabbitmq.connection-timeout: 5s
 
+# TASK-014：集成测试用 Redis（限流的共享状态存储）。
+#
+# 与 RabbitMQ 的区别：这里给了本机默认值而不是留空。原因是不需要 Redis 的
+# 用例（绝大多数）不该因为"没配 Redis"而启动失败——限流默认 FAIL_OPEN，
+# 没有 Redis 只是不节流。真正验证限流的 RateLimitIT 用环境变量门控，
+# 没 Redis 时明确跳过并写进报告，不会伪装成通过。
+spring.data.redis.host: ${REPOPILOT_IT_REDIS_HOST:127.0.0.1}
+spring.data.redis.port: ${REPOPILOT_IT_REDIS_PORT:16379}
+spring.data.redis.password: ${REPOPILOT_IT_REDIS_PASSWORD:}
+spring.data.redis.database: ${REPOPILOT_IT_REDIS_DATABASE:0}
+spring.data.redis.timeout: 2s
+spring.data.redis.connect-timeout: 2s
+
+repopilot.rate-limit:
+  enabled: true
+  # 独立环境段：同一台 Redis 上 it 与 dev 的桶互不干扰。
+  environment: it
+  trust-forwarded-for: false
+  policies:
+    # 绝大多数集成测试会连续创建实验/批次，几百个请求是常态。
+    # 这里把额度放到实际不可能触发的量级，让"限流"只由 RateLimitIT 验证，
+    # 避免其它用例偶发 429 变成难以复现的 flaky。
+    api-write:
+      capacity: 100000
+      refill-tokens-per-second: 100000
+      cost-per-request: 1
+      ttl: 10m
+      failure-mode: FAIL_OPEN
+      paths:
+        - /api/v1/experiments
+        - /api/v1/experiments/*/start
+        - /api/v1/experiments/*/evaluation-batches
+      methods: [POST]
+    api-bulk:
+      capacity: 100000
+      refill-tokens-per-second: 100000
+      cost-per-request: 1
+      ttl: 10m
+      failure-mode: FAIL_OPEN
+      paths:
+        - /api/v1/imports
+        - /api/v1/dataset-versions/*/cases:import
+        - /api/v1/artifacts
+      methods: [POST]
+
 logging:
   level:
     root: WARN

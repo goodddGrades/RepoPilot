@@ -199,6 +199,14 @@ class JudgeRubric:
                 last_error = exc
                 attempts.append({"attempt": attempt, "errorCode": exc.error_code,
                                  "retryable": exc.retryable})
+                # 恢复时间由外部决定（本地令牌桶拒绝、限流依赖不可用）：
+                # 算子内的快速重试是 1s/3s，而额度恢复通常要几十秒，
+                # 这几轮必然全败，只会把重试预算烧光、把日志刷满。
+                # 直接转成任务级失败，由后端按 5s/15s 重排 Attempt。
+                if exc.retry_after_seconds is not None:
+                    attempts[-1]["retryAfterSeconds"] = round(exc.retry_after_seconds, 3)
+                    raise EvaluationDependencyError(exc.error_code, exc.message,
+                                                    retryable=exc.retryable) from exc
                 # 不可重试的失败立刻退出：鉴权错、CLI 缺失、协议不兼容重试无意义。
                 if not exc.retryable or attempt == attempts_allowed:
                     # 转成算子层的依赖错误，poller 才能据此决定是否重试整个 Job。

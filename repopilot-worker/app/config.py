@@ -116,6 +116,45 @@ class Settings(BaseSettings):
     judge_stub_verdict: str = Field(default="PASS", validation_alias="WORKER_JUDGE_STUB_VERDICT")
     judge_stub_inject: str = Field(default="ok", validation_alias="WORKER_JUDGE_STUB_INJECT")
 
+    # ---- Redis 分布式限流（TASK-014）----
+    #
+    # 与 Java 侧共用同一台 Redis 的同一套命名空间规则：
+    #   {key_prefix}:{environment}:{policy}:{subjectHash}
+    # environment 必须与后端保持一致（同环境同值），否则同一个模型
+    # 在 Java 侧和 Python 侧会各有一份额度，"共享限额"就不成立了。
+
+    redis_host: str = Field(default="127.0.0.1", validation_alias="REDIS_HOST")
+    redis_port: int = Field(default=16379, validation_alias="REDIS_PORT")
+    redis_password: str = Field(default="", validation_alias="REDIS_PASSWORD", repr=False)
+    redis_database: int = Field(default=0, validation_alias="REDIS_DATABASE")
+    # 限流在模型调用主链路上：连接/读写的超时必须短，卡住等于把 Worker 拖死。
+    redis_timeout_seconds: float = Field(
+        default=2.0, validation_alias="WORKER_REDIS_TIMEOUT_SECONDS")
+
+    # 总开关。关闭后 JudgeClient 保持原样，不做任何 Redis 调用。
+    rate_limit_enabled: bool = Field(default=True, validation_alias="WORKER_RATE_LIMIT_ENABLED")
+    rate_limit_key_prefix: str = Field(
+        default="repopilot:ratelimit", validation_alias="WORKER_RATE_LIMIT_KEY_PREFIX")
+    rate_limit_environment: str = Field(default="dev", validation_alias="WORKER_RATE_LIMIT_ENV")
+    # 模型调用保护默认**失败关闭**：Redis 不可用时宁可让本次调用失败并可重试，
+    # 也不能放行到打满上游配额（那部分损失不可逆）。
+    rate_limit_failure_mode: Literal["FAIL_CLOSED", "FAIL_OPEN"] = Field(
+        default="FAIL_CLOSED", validation_alias="WORKER_RATE_LIMIT_FAILURE_MODE")
+
+    # Judge 限流的具体阈值。默认值是开发环境的保守起点，不是生产推荐值。
+    judge_rate_limit_capacity: int = Field(
+        default=10, validation_alias="WORKER_JUDGE_RATE_LIMIT_CAPACITY")
+    judge_rate_limit_refill_per_second: float = Field(
+        default=0.2, validation_alias="WORKER_JUDGE_RATE_LIMIT_REFILL")
+    judge_rate_limit_cost: int = Field(
+        default=1, validation_alias="WORKER_JUDGE_RATE_LIMIT_COST")
+    judge_rate_limit_ttl_seconds: int = Field(
+        default=600, validation_alias="WORKER_JUDGE_RATE_LIMIT_TTL_SECONDS")
+    # 限流维度：PROVIDER=按提供方、MODEL=按模型、PROVIDER_MODEL=两者组合（默认）。
+    # 上游配额按账号算时用 PROVIDER；按模型算时用 MODEL。
+    judge_rate_limit_dimension: Literal["PROVIDER", "MODEL", "PROVIDER_MODEL"] = Field(
+        default="PROVIDER_MODEL", validation_alias="WORKER_JUDGE_RATE_LIMIT_DIMENSION")
+
     @property
     def capabilities(self) -> list[str]:
         """能力字符串列表；空串被忽略。"""

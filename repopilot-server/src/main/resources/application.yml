@@ -29,6 +29,21 @@ spring:
     virtual:
       # Java 21 虚拟线程：仅作为执行器，不改变任何业务语义
       enabled: false
+  data:
+    redis:
+      # TASK-014：Redis 从"仅编排的预留实例"变成限流的共享状态存储。
+      # 默认值与 deploy/docker-compose.yml 的对外端口一致（16379），
+      # 不是 Redis 默认的 6379——避免误连到机器上别的 Redis 实例。
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:16379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      # 超时必须短：限流在请求主链路上，一个卡住的 Redis 不能让所有写请求跟着卡住。
+      # 宁可快速判定"依赖不可用"并按 failure-mode 处置，也不要无限等待。
+      timeout: 2s
+      connect-timeout: 2s
+      lettuce:
+        shutdown-timeout: 100ms
 
 server:
   port: ${SERVER_PORT:8080}
@@ -64,7 +79,13 @@ management:
         enabled: true
       # 探针分组显式声明，避免依赖指标被默认规则带进 liveness：
       # liveness 只反映进程自身（JVM/应用上下文），外部依赖故障不得触发容器重启；
-      # readiness 反映“能否对外提供业务请求”，必须包含真实外部依赖。
+      # readiness 反映"能否对外提供业务请求"，必须包含真实外部依赖。
+      #
+      # TASK-014 刻意**不**把 redis 加进 readiness：默认策略是 FAIL_OPEN，
+      # Redis 故障时写入仍可进行（只是失去节流），把它列入会让 Redis 抖动
+      # 直接把整个服务摘流，代价远大于收益。Redis 的真实状态通过
+      # /api/health 的 redis 组件（DOWN → 整体 DEGRADED）暴露。
+      # 若把策略改成 FAIL_CLOSED，应同时把 redis 加到下面的 include 里。
       group:
         liveness:
           include: livenessState,ping
@@ -100,6 +121,51 @@ repopilot:
       grace-seconds: 86400
       interval-ms: 3600000
       initial-delay-ms: 600000
+
+  # TASK-014：入口限流（Redis + Lua 令牌桶）。
+  #
+  # 阈值全部来自配置，业务代码里没有任何数字。下面的数值是**开发环境的保守起点**，
+  # 不是生产推荐值：生产应按"可信客户端数 × 每客户端合理频率"反推容量，
+  # 再按"目标吞吐 ÷ 实例数"反推补充速率。推导方法见
+  # docs/modules/rate-limiting.md。
+  rate-limit:
+    enabled: ${REPOPILOT_RATE_LIMIT_ENABLED:true}
+    # 命名空间第一段：便于用 SCAN 单独清理，也避免与后续其他 Redis 用途混在一起。
+    key-prefix: ${REPOPILOT_RATE_LIMIT_KEY_PREFIX:repopilot:ratelimit}
+    # 环境隔离段。多环境共用一台 Redis 时必须不同，否则测试会吃掉开发环境的额度。
+    environment: ${REPOPILOT_RATE_LIMIT_ENV:${spring.profiles.active:dev}}
+    # 默认不信任 X-Forwarded-For：该头由客户端自由填写，只有位于可信代理之后才可打开。
+    trust-forwarded-for: ${REPOPILOT_RATE_LIMIT_TRUST_FORWARDED_FOR:false}
+    policies:
+      # 高成本写入：创建实验、启动实验（会生成 Run 并触发 Agent 执行）、创建评测批次。
+      # 30 容量 + 0.5 个/秒 ≈ 允许 30 次突发、长期 30 次/分钟。
+      api-write:
+        capacity: ${REPOPILOT_RATE_LIMIT_API_WRITE_CAPACITY:30}
+        refill-tokens-per-second: ${REPOPILOT_RATE_LIMIT_API_WRITE_REFILL:0.5}
+        cost-per-request: 1
+        ttl: 10m
+        # API 入口以可用性优先：Redis 抖动不该让整个写入面 503。
+        # 注意这不是"退化成每实例各自计数"，而是明确不限流 + unavailable 指标。
+        failure-mode: FAIL_OPEN
+        paths:
+          - /api/v1/experiments
+          - /api/v1/experiments/*/start
+          - /api/v1/experiments/*/evaluation-batches
+        methods: [POST]
+      # 批量/大对象入口：导入、知识库样本批量导入、制品上传。
+      # 单次请求本身就消耗大量 CPU/IO/存储，所以容量更低、恢复更慢。
+      api-bulk:
+        capacity: ${REPOPILOT_RATE_LIMIT_API_BULK_CAPACITY:5}
+        refill-tokens-per-second: ${REPOPILOT_RATE_LIMIT_API_BULK_REFILL:0.05}
+        cost-per-request: 1
+        # 5 / 0.05 = 100s 补满；TTL 远大于它，避免空闲客户端周期性拿回满桶
+        ttl: 30m
+        failure-mode: FAIL_OPEN
+        paths:
+          - /api/v1/imports
+          - /api/v1/dataset-versions/*/cases:import
+          - /api/v1/artifacts
+        methods: [POST]
   worker:
     # 留空 => /internal/v1 一律 401（fail closed）。本机运行时从 .env 注入。
     token: ${REPOPILOT_WORKER_TOKEN:}

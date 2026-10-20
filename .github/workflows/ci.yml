@@ -76,6 +76,22 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=12
+      # TASK-014：限流要用**真实 Redis** 验证 Lua 原子性、TTL 与服务端时间。
+      # 用替身只能证明"分支会执行"，证明不了"64 个并发恰好放行 N 个"。
+      # 版本与 deploy/docker-compose.yml 锁定的 7.2.5 对齐。
+      redis:
+        image: redis:7.2.5
+        ports:
+          - 6379:6379
+        # 注意：GitHub Actions 的 services 只接受 docker create 级别的参数，
+        # 不能像 compose 那样追加 `--requirepass`。所以 CI 里的 Redis 无密码，
+        # 带密码的连接路径由本地 compose（deploy/docker-compose.yml）验证。
+        # 这一点写进交付报告，不假装 CI 覆盖了鉴权分支。
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -94,6 +110,19 @@ jobs:
             sleep 2
           done
           echo "MySQL 未就绪" >&2; exit 1
+      - name: 等待 Redis 可连接
+        # 与 MySQL 同理：不靠 sleep 猜，直接对真实服务端 ping。
+        # 限流用例缺 Redis 会被 @EnabledIfEnvironmentVariable 跳过——
+        # 这里先确认"要测的东西真的在"，避免把基础设施没起好伪装成"跳过"。
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec "${{ job.services.redis.id }}" \
+              redis-cli ping 2>/dev/null | grep -q PONG; then
+              echo "Redis ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "Redis 未就绪" >&2; exit 1
       - name: 记录数据库版本
         run: |
           echo "matrix.mysql = ${{ matrix.mysql }}"
@@ -134,6 +163,12 @@ jobs:
           REPOPILOT_IT_RABBIT_PORT: '5672'
           REPOPILOT_IT_RABBIT_USER: repopilot
           REPOPILOT_IT_RABBIT_PASSWORD: repopilot_rabbit_only
+          # TASK-014：RateLimitIT 缺这些变量会整类跳过。CI 里必须显式给，
+          # 否则"限流没测"会被一句 skip 掩盖过去。
+          REPOPILOT_IT_REDIS_HOST: 127.0.0.1
+          REPOPILOT_IT_REDIS_PORT: '6379'
+          # CI 的 service 容器无密码（见 services.redis 注释）
+          REPOPILOT_IT_REDIS_PASSWORD: ''
         working-directory: repopilot-server
         run: ./mvnw -B verify
       - name: 校验迁移版本连续
@@ -170,11 +205,30 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      # TASK-014：Judge 限流必须验证"多个 Worker 共享同一限额"，
+      # 这只能在同一台真实 Redis 上、用两个独立连接来证明。
+      redis:
+        image: redis:7.2.5
+        ports:
+          - 6379:6379
+        # 与 backend job 一致：services 不支持 `--requirepass`，CI 用无密码实例；
+        # 带密码路径由本地 compose 验证。
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     env:
       WORKER_TEST_RABBIT_HOST: 127.0.0.1
       WORKER_TEST_RABBIT_PORT: '5672'
       WORKER_TEST_RABBIT_USER: repopilot
       WORKER_TEST_RABBIT_PASSWORD: repopilot_rabbit_only
+      # 未设置时 tests/test_ratelimit_redis.py 整组跳过；
+      # CI 里必须设置，让"限流没测"不可能被 skip 掩盖。
+      WORKER_TEST_REDIS_HOST: 127.0.0.1
+      WORKER_TEST_REDIS_PORT: '6379'
+      # CI 的 service 容器无密码（见 services.redis 注释）
+      WORKER_TEST_REDIS_PASSWORD: ''
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -201,6 +255,18 @@ jobs:
             rabbitmqctl set_user_tags repopilot administrator
       - run: pip install -r requirements-dev.txt
         working-directory: repopilot-worker
+      - name: 等待 Redis 可连接
+        # 先确认服务真的可用，再跑测试：否则整组限流用例会"跳过"，
+        # 而"跳过"看起来像"这台机器没条件"，实际是服务没起来。
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec "${{ job.services.redis.id }}" \
+              redis-cli ping 2>/dev/null | grep -q PONG; then
+              echo "Redis ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "Redis 未就绪" >&2; exit 1
       - name: 跑测试（含真实 broker 的退避/死信链路）
         run: python -m pytest -q
         working-directory: repopilot-worker

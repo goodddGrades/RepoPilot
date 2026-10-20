@@ -52,9 +52,34 @@ def _judge_client(settings: Any) -> JudgeClient:
     if provider == "stub":
         inject = str(getattr(settings, "judge_stub_inject", "") or "ok")
         verdict = str(getattr(settings, "judge_stub_verdict", "") or "PASS")
-        return StubJudge(verdict=verdict, inject=inject)
-    executable = getattr(settings, "judge_cli", "claude") or "claude"
-    return ClaudeCliJudge(executable)
+        client: JudgeClient = StubJudge(verdict=verdict, inject=inject)
+    else:
+        executable = getattr(settings, "judge_cli", "claude") or "claude"
+        client = ClaudeCliJudge(executable)
+    return _with_rate_limit(client, settings)
+
+
+def _with_rate_limit(client: JudgeClient, settings: Any) -> JudgeClient:
+    """在**唯一可观测的模型调用边界**上包一层分布式限流。
+
+    选 ``JudgeClient.complete`` 而不是 ``JudgeRubric.evaluate`` 的原因：
+    evaluate 只是"一次评分"，内部可能因为重试调用模型多次；按 evaluate 限流
+    会让实际请求数超出配额。包在 client 上，每次真正要发请求才消耗令牌。
+
+    延迟导入 ``redis``：只声明了 RUN 能力、从不调用模型的 Worker 不该因为
+    装了限流依赖就在导入阶段多付一份成本。
+    """
+    if not getattr(settings, "rate_limit_enabled", False):
+        return client
+
+    from app.ratelimit.bucket import RedisTokenBucket
+    from app.ratelimit.judge_guard import RateLimitedJudgeClient
+    from app.ratelimit.policy import policy_from_settings
+
+    limiter = RedisTokenBucket.from_settings(settings)
+    return RateLimitedJudgeClient(
+        client, limiter, policy_from_settings(settings),
+        dimension=str(getattr(settings, "judge_rate_limit_dimension", "PROVIDER_MODEL")))
 
 
 def available_keys() -> list[str]:

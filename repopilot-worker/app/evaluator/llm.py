@@ -39,13 +39,20 @@ class JudgeCallError(Exception):
 
     ``retryable`` 区分限流/超时（值得重试）与鉴权失败、响应不合规
     （重试没有意义，应尽快暴露配置问题）。
+
+    ``retry_after_seconds`` 是"这次失败的恢复时间由外部决定"的信号：
+    本地令牌桶拒绝或 Redis 不可用时，1~3 秒的快速重试**一定**还是失败，
+    只会把重试预算白白烧光。带了这个字段的失败会跳过算子内的快速重试，
+    直接交给任务级退避（后端按 5s/15s 重排 Attempt）。
     """
 
-    def __init__(self, error_code: str, message: str, *, retryable: bool) -> None:
+    def __init__(self, error_code: str, message: str, *, retryable: bool,
+                 retry_after_seconds: float | None = None) -> None:
         super().__init__(message)
         self.error_code = error_code
         self.message = message
         self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
 
 
 @dataclass(frozen=True)
