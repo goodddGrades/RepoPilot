@@ -53,6 +53,7 @@
 | [`modules/annotation-system.md`](./modules/annotation-system.md) | TASK-009 |
 | [`modules/experiment-analysis.md`](./modules/experiment-analysis.md) | TASK-010 |
 | [`modules/messaging-reliability.md`](./modules/messaging-reliability.md) | TASK-011（**运维手册**：Outbox/Inbox 排查、手动重投递、指标、保留策略） |
+| [`modules/rate-limiting.md`](./modules/rate-limiting.md) | TASK-014（**运维手册**：Lua 原子令牌桶、Key 设计、故障策略、阈值推导、两层接入与排查） |
 | [`modules/frontend-design.md`](./modules/frontend-design.md) | TASK-003 起逐步落地 |
 
 ## 机器可读契约
