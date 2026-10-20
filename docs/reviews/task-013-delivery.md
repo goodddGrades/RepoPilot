@@ -326,8 +326,8 @@ bash tools/demo-task-013.sh   →   EXIT=0   全部 9 个场景通过
 | 分支 | `develop` |
 | 远端 | `origin https://github.com/goodddGrades/RepoPilot.git` |
 | 远端基线 | `d0010c4` `docs(task-007): 补记 CI 重跑结果与基础设施抖动说明` |
-| 本地提交（本任务） | **`a99b00c`** `feat(messaging): RabbitMQ 四层拓扑、真实消费接入、死信重放与保留策略（TASK-013）`（48 个文件，+11044 −81）<br>**`36efd03`** `docs(task-013): 交付报告补记提交 ID 与演示最终的保留期数字` |
-| 待推送范围 | **`origin/develop..HEAD` 共 10 个提交**（`git rev-list --left-right --count` = `0 10`，远端无落后，可 fast-forward）：<br>`36efd03` `a99b00c` `8a3c8c0` `879348b` `6435553` `9b8cb7a` `02f0f1c` `7b3c7ac` `71428d6` `d57d1c3`<br>覆盖 TASK-008 ~ TASK-013，**不是只有本任务两个提交** |
+| 本地提交（本任务） | **`a99b00c`** `feat(messaging): RabbitMQ 四层拓扑、真实消费接入、死信重放与保留策略（TASK-013）`（48 个文件，+11044 −81）<br>**`36efd03`** `docs(task-013): 交付报告补记提交 ID 与演示最终的保留期数字`<br>**`b3f9f2d`** `docs(task-013): 验收轮更正 readiness 跳过原因与长任务占用消费者的描述`<br>外加一个紧随其后的报告更新提交（记录验收轮数字与 Git 基线） |
+| 待推送范围 | **`origin/develop..HEAD` 共 12 个提交**（`git rev-list --left-right --count origin/develop...HEAD` = `0 12`，远端无落后，可 fast-forward）：<br>`36efd03` `a99b00c` `8a3c8c0` `879348b` `6435553` `9b8cb7a` `02f0f1c` `7b3c7ac` `71428d6` `d57d1c3` + 验收轮两个文档提交<br>覆盖 TASK-008 ~ TASK-013，**不是只有本任务两个提交** |
 | 推送 | **未 push**。`AGENTS.md` 规定"push 需逐次显式授权"，本任务未获得授权 |
 | GitHub Actions | **未运行**（未 push，无法触发）；本地等价检查已全部执行 |
 
@@ -377,3 +377,36 @@ CI 工作流已更新（`.github/workflows/ci.yml`）：
 | 10 | `repopilot.consumer.failed` 恒为 0（Worker 从不上报 `failed`） | 指标存在但永远不增长 |
 
 前 9 条的实测经过写在 `docs/reviews/task-013-amqp-facts.md`（28 条），第 10 条见 `ConsumerStatsController` 注释。
+
+## 9. 最终交付验收（2026-10-20）
+
+本节只记录**验收轮实际重跑**的结果，不重复前文的历史数字。
+
+| 项 | 命令 / 条件 | 结果 |
+| --- | --- | --- |
+| 后端单元 + 集成 | `./mvnw -B -o verify`，真实 MySQL 8.0.22 @13306 + 真实 RabbitMQ 3.13.7 @5672，`REPOPILOT_IT_REQUIRE_ALL_UP=true` | **75 单测 + 258 集成，0 失败 0 错误 0 跳过，BUILD SUCCESS**（2:50） |
+| Worker | 真实 broker，`WORKER_TEST_RABBIT_*` 指向本机 | **232 passed / 4 skipped**（4 条付费 CLI 冒烟**未执行**，不计入通过数；其余含真实 broker 用例全部执行） |
+| 前端 | `npm run build` | **EXIT=0**（本任务未改前端；1.1 MB 单 chunk 警告是既有问题） |
+| 设计校验 | `tools/verify_design.py` | **PASS**（1289 checks / 28 tables / 4 json_schemas） |
+| 生成器一致性 | `gen_ddl_from_dict.py --check`、`gen_java_from_dict.py --check`、`--self-test` | 全部 OK（6 个迁移 / 76 个 Java 文件 / 自测 6 项） |
+| 端到端演示 | `bash tools/demo-task-013.sh`（**后端未启动**） | **9/9 通过，EXIT=0**；脚本对需要后端的重放路径打印"【未验证】"并指向自动化测试，未伪装成已通过 |
+
+### 9.1 跳过项的处置
+
+唯一一条后端 skipped 是 `ApiHealthIT.readinessShouldBeUpWhenEveryDependencyIsAvailable`，
+门控条件 `REPOPILOT_IT_REQUIRE_ALL_UP=true`。本机 MySQL 与 RabbitMQ 都在，
+**属于"本应执行"**：补上环境变量后用例真实执行并通过（`ApiHealthIT` 4/4），全量 0 跳过。
+
+### 9.2 验收轮发现的文档缺陷（已修）
+
+`docs/modules/messaging-reliability.md` §1.1 与 `consumer.py` 头部原称"长任务不占用消费者，
+执行由轮询线程异步推进"，与实现不符：`on_wakeup` 接的是 `runtime.run_once()`，
+在 AMQP 回调线程里**同步**跑完 claim → 执行 → 回传 → ACK。已改为如实描述并列入已知限制。
+功能层面的缺口（执行期间再发布队列一并暂停）未在验收轮改动，见 §7。
+
+### 9.3 未验证项（明确不计入通过）
+
+* 4 条付费真实 CLI 冒烟（`test_cli_runner_smoke.py`）—— 需真实费用，未执行。
+* 后端在线时的受控重放 HTTP 路径 —— 本轮演示时后端未启动，证据来自
+  `RabbitTopologyIT` 的重放用例与 `MessagingObservabilityIT` 的真实 HTTP 端点用例。
+* GitHub Actions —— 未 push，未触发。
