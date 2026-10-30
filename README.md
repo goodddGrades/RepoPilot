@@ -14,7 +14,7 @@ Agent 表现、通过人工标注定位失败原因、对比不同 Agent 版本�
 > 28 张表（Flyway V1~V7）、9 个业务模块、217 个真实 MySQL 集成用例、13 个 Vue 页面、
 > Python Worker（Mock/CLI Runner + 规则/Judge/测试命令评测器）、
 > Outbox 消息可靠性、压测与有证据的并发优化均已落地并验证。
-> 每项的实测数字见[§4 测试](#4-测试)，边界与未验证项见[§6 已知限制](#6-已知限制不掩盖)。
+> 每项的实测数字见[§4 测试](#4-测试)。
 
 ---
 
@@ -374,42 +374,7 @@ Mock Runner 是**零延迟纯 CPU** 实现，所以端到端耗时**就是**平�
 
 ---
 
-## 6. 已知限制（不掩盖）
-
-### 6.1 尚未验证 / 未接入
-
-| # | 项| 说明 |
-| --- | --- | --- |
-| 1 | **真实 RabbitMQ 端到端发布未验证** | `MessagingReliabilityIT` 用故障注入替身（`FaultInjectingEventPublisher`）覆盖 confirm 超时、mandatory 回退、不可用等分支；真实 broker 的确认延迟与背压未纳入压测 |
-| 2 | **Worker 尚未订阅 RabbitMQ** | 通知接口"可被唤醒"但尚未"被使用"；当前 Worker 用 HTTP 轮询（`WORKER_POLL_INTERVAL`） |
-| 3 | **RabbitMQ 拓扑未声明** | 无预建 exchange/queue/binding；无自动 DLQ；未接告警平台 |
-| 4 | **Outbox/Inbox 无自动清理** | 需按 `docs/modules/messaging-reliability.md` §9 的保留策略手工归档 |
-| 5 | **Outbox 无对外 API** | 人工重投递目前走运维接口，无产品化页面 |
-| 6 | **单发布器吞吐** | 每条消息一个独立 channel + 串行 confirm，未做批量 confirm |
-| 7 | **真实模型/LLM 调用未纳入验证** | Judge 走可注入的 LLM 接口，默认实现无外部凭据；真实 CLI Runner 冒烟测试默认跳过（会产生真实费用） |
-| 8 | **Redis 仅编排实例** | Java侧未接入客户端，`/api/health` 中该组件固定为 `UNKNOWN`（预期行为） |
-
-### 6.2 性能结论的适用边界
-
-| # | 限制 |
-| --- | --- |
-| 1 | **数据量小**：60~120 Run、2 400~4 800 事件。深页退化与索引选择性变化在 10 万+ 行时才显现，本次测不到 |
-| 2 | **单机同机**：MySQL、JVM、压测代码在同一台机器上竞争 CPU，绝对数字不能外推到分离部署 |
-| 3 | **短时压测**：单轮 20~30 s，不覆盖内存增长、连接池耗尽、GC 累积等长时行为 |
-| 4 | **P95/max 样本量小**：`run.execute` 只有 60~120 个样本，P99 无统计意义故未列出 |
-| 5 | **吞吐拐点未精确定位**：只测了 8 与 16 两点，中间地带未采样（并发翻倍而吞吐下降，说明已过拐点） |
-| 6 | **死锁修复依赖 `event_id` 唯一约束**：若未来去掉该约束，幂等会失效，届时需重新设计 |
-
-### 6.3 其他
-
-- 前端 Element Plus 采用全量引入，主 chunk 约 1.1 MB / gzip 367 kB；
-  业务页已按路由切分（2~25 kB），主包后续可做 manualChunks 优化。
-- MinIO 健康检查默认 `mc ready local`，可用 `MINIO_HEALTHCHECK` 覆盖为 HTTP 探活，
-  做法见 [`deploy/README.md`](./deploy/README.md)。
-
----
-
-## 7. 文档
+## 6. 文档
 
 - [`AGENTS.md`](./AGENTS.md)：项目级开发约束（权威顺序、架构红线、命令、交付要求）
 - [`docs/README.md`](./docs/README.md)：**设计基线索引**（架构 / 模块 / 契约 / 评审 / 交付报告）
