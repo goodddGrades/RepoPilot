@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "comment": "V1 最小算子注册清单。清单随代码版本管理，启动时幂等导入；已存在的 (key, version) 不会被覆盖——修改算子契约必须发布新版本。",
+  "evaluators": [
+    {
+      "key": "output.non_empty",
+      "version": 1,
+      "displayName": "输出非空",
+      "description": "来源缺失输出时 NOT_APPLICABLE；有输出但为空（空白字符串、空数组、空对象）时 FAIL；有内容 PASS。",
+      "type": "RULE",
+      "implementationRef": "builtin://evaluators/output.non_empty",
+      "inputSchema": {
+        "type": "object",
+        "required": ["outputPath"],
+        "properties": {
+          "outputPath": {"type": "string", "description": "Run 输出中的字段路径"}
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["verdict", "score"],
+        "properties": {
+          "verdict": {"enum": ["PASS", "FAIL", "INDETERMINATE", "NOT_APPLICABLE"]},
+          "score": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    {
+      "key": "answer.exact_match",
+      "version": 1,
+      "displayName": "答案精确匹配",
+      "description": "按 outputPath 与 expectedPath 取值比较；缺少 ground truth 时 NOT_APPLICABLE。规范化规则（trim、统一换行）必须写在 config 中，默认不忽略大小写。",
+      "type": "RULE",
+      "implementationRef": "builtin://evaluators/answer.exact_match",
+      "inputSchema": {
+        "type": "object",
+        "required": ["outputPath", "expectedPath"],
+        "properties": {
+          "outputPath": {"type": "string"},
+          "expectedPath": {"type": "string"},
+          "trim": {"type": "boolean", "default": true},
+          "normalizeNewlines": {"type": "boolean", "default": true},
+          "ignoreCase": {"type": "boolean", "default": false}
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["verdict", "score"],
+        "properties": {
+          "verdict": {"enum": ["PASS", "FAIL", "INDETERMINATE", "NOT_APPLICABLE"]},
+          "score": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    {
+      "key": "trace.tool_error",
+      "version": 1,
+      "displayName": "工具调用错误",
+      "description": "完整工具观测中存在失败调用时 FAIL；缺少工具观测时 NOT_APPLICABLE，不得自动 PASS。",
+      "type": "TRACE",
+      "implementationRef": "builtin://evaluators/trace.tool_error",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ignoreTools": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["verdict", "score"],
+        "properties": {
+          "verdict": {"enum": ["PASS", "FAIL", "INDETERMINATE", "NOT_APPLICABLE"]},
+          "score": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    {
+      "key": "cost.budget",
+      "version": 1,
+      "displayName": "成本预算",
+      "description": "成本与币种齐全且同币种时才比较；币种未知或缺失时 NOT_APPLICABLE。",
+      "type": "COST",
+      "implementationRef": "builtin://evaluators/cost.budget",
+      "inputSchema": {
+        "type": "object",
+        "required": ["maxCost", "currency"],
+        "properties": {
+          "maxCost": {"type": "number", "minimum": 0},
+          "currency": {"type": "string", "minLength": 3, "maxLength": 3}
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["verdict", "score"],
+        "properties": {
+          "verdict": {"enum": ["PASS", "FAIL", "INDETERMINATE", "NOT_APPLICABLE"]},
+          "score": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    {
+      "key": "test.command",
+      "version": 1,
+      "displayName": "测试命令",
+      "description": "只运行可信测试白名单中的命令；超时属于技术错误，测试断言失败是 COMPLETED + FAIL。",
+      "type": "TEST",
+      "implementationRef": "builtin://evaluators/test.command",
+      "inputSchema": {
+        "type": "object",
+        "required": ["commandKey"],
+        "properties": {
+          "commandKey": {"type": "string", "description": "白名单中的命令标识，不接受任意 shell"},
+          "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600}
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["verdict", "score"],
+        "properties": {
+          "verdict": {"enum": ["PASS", "FAIL", "INDETERMINATE", "NOT_APPLICABLE"]},
+          "score": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    {
+      "key": "judge.rubric",
+      "version": 1,
+      "displayName": "评分规范（模型判断）",
+      "description": "固定 rubric、prompt 版本、模型标识与温度；结构化输出经 Schema 校验，非法 JSON 是技术错误而不是 FAIL。",
+      "type": "LLM_JUDGE",
+      "implementationRef": "builtin://evaluators/judge.rubric",
+      "inputSchema": {
+        "type": "object",
+        "required": ["rubricKey", "model"],
+        "properties": {
+          "rubricKey": {"type": "string"},
+          "promptVersion": {"type": "string"},
+          "model": {"type": "string"},
+          "temperature": {"type": "number", "minimum": 0, "maximum": 2},
+          "maxTokens": {"type": "integer", "minimum": 1}
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["verdict", "score", "reason"],
+        "properties": {
+          "verdict": {"enum": ["PASS", "FAIL", "INDETERMINATE", "NOT_APPLICABLE"]},
+          "score": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+          "reason": {"type": "string"}
+        }
+      }
+    }
+  ]
+}

@@ -50,4 +50,29 @@ public interface ApiIdempotencyKeyMapper {
               WHERE id = #{id}
             """)
     Optional<ApiIdempotencyKey> findById(@Param("id") String id);
+
+    /**
+     * 按 (scope, key) 查回执。
+     *
+     * <p>调用方必须用 {@code REQUIRES_NEW} 打开新事务再调它：并发场景下要读到**别人已提交**的回执，
+     * 在当前事务的快照里读不到刚提交的数据。
+     */
+    @Select("""
+            SELECT id,
+                   scope,
+                   idempotency_key,
+                   request_hash,
+                   resource_type,
+                   resource_id,
+                   http_status,
+                   response_json,
+                   expires_at,
+                   created_at,
+                   updated_at
+              FROM api_idempotency_keys
+              WHERE scope = #{scope}
+                AND idempotency_key = #{idempotencyKey}
+            """)
+    Optional<ApiIdempotencyKey> findByScopeAndKey(@Param("scope") String scope,
+                                                  @Param("idempotencyKey") String idempotencyKey);
 }

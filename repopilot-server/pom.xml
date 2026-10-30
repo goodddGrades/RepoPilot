@@ -67,6 +67,15 @@
       <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
 
+    <!-- 缓存/限流：Redis（Lettuce 客户端 + StringRedisTemplate + 脚本执行）。
+         TASK-014：Redis 从"仅编排的预留实例"变为 API 入口限流的共享状态存储。
+         只引入 Spring Boot 官方 starter，不引第三方限流框架——限流算法由
+         仓库内的 Lua 脚本实现，避免多一套不受控的依赖与语义。 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-redis</artifactId>
+    </dependency>
+
     <!-- 配置元数据提示 -->
     <dependency>
       <groupId>org.springframework.boot</groupId>

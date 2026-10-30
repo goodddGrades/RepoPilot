@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -48,4 +49,29 @@ public interface ArtifactMapper {
               WHERE id = #{id}
             """)
     Optional<Artifact> findById(@Param("id") String id);
+
+    // ---- TASK-006：事件证据的归属校验 ----
+
+    /**
+     * 在给定 id 中筛出**确实归属该 Run** 的 Artifact。
+     *
+     * <p>事件里的 {@code artifact_id} 是采集端写入的引用，理论上必须同 Run（复合外键只保证
+     * Artifact 存在，不保证归属）。回放接口只暴露通过这里校验的引用：
+     * 脏数据里的跨 Run 引用不会因此变成一条可点击的证据。
+     */
+    @Select("""
+            <script>
+            SELECT id
+              FROM artifacts
+             WHERE run_id = #{runId}
+               AND id IN
+             <foreach collection="ids" item="aid" open="(" separator="," close=")">#{aid}</foreach>
+            </script>
+            """)
+    List<String> findIdsOwnedByRun(@Param("runId") String runId,
+                                   @Param("ids") List<String> ids);
+
+    /** 全量对象键：清理孤儿文件时与存储实际内容做差集。 */
+    @Select("SELECT object_key FROM artifacts")
+    List<String> listObjectKeys();
 }

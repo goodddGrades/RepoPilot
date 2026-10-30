@@ -1,12 +1,17 @@
 """FastAPI 应用入口。
 
-启动：
+启动（显式触发一次执行）：
     uvicorn app.main:app --host 0.0.0.0 --port 8000
+    curl -X POST http://127.0.0.1:8000/worker/run-once
 
-V1 只提供健康检查，不包含任何 Agent Runner 或 Judge 的真实实现。
+TASK-004 提供 Mock Runner 与完整 HTTP 协议；真实 Codex 适配属于 TASK-008，
+在此之前不会声称"已接入真实 Agent"。
 """
 
 from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 from fastapi import FastAPI
 
@@ -15,6 +20,25 @@ from app.api.middleware import RequestContextMiddleware
 from app.api.router import api_router
 from app.common.logging import configure_logging, get_logger
 from app.config import get_settings
+
+
+@asynccontextmanager
+async def _lifespan(settings) -> AsyncIterator[None]:
+    """按配置启停后台执行。
+
+    启动条件是「**任一**通道启用」，不是只看 autostart：
+    只开 RabbitMQ 不开轮询是一个合法且推荐的部署形态（消息驱动 + 手动兜底），
+    若这里只看 autostart，订阅了队列却没人消费——消息会一直堆在队列里。
+    """
+    if settings.autostart or settings.rabbitmq_enabled:
+        from app.runtime import get_runtime
+
+        get_runtime().start()
+    yield
+    if settings.autostart or settings.rabbitmq_enabled:
+        from app.runtime import reset_runtime
+
+        reset_runtime()
 
 
 def create_app() -> FastAPI:
@@ -29,9 +53,10 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="RepoPilot Worker",
         version=settings.version,
-        description="RepoPilot Agent 执行与评测 Worker（V1 仅提供健康检查）",
+        description="RepoPilot Agent 执行与评测 Worker（TASK-004：Mock Runner 与执行协议）",
         docs_url="/docs",
         openapi_url="/openapi.json",
+        lifespan=lambda app: _lifespan(settings),
     )
 
     app.add_middleware(RequestContextMiddleware)
@@ -46,6 +71,7 @@ def create_app() -> FastAPI:
                 "version": settings.version,
                 "environment": settings.environment,
                 "listen": f"{settings.host}:{settings.port}",
+                "autostart": settings.autostart,
             }
         },
     )

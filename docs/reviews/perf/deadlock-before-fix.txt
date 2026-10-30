@@ -1,0 +1,19 @@
+TASK-012 死锁根因证据（InnoDB SHOW ENGINE INNODB STATUS，修复前）
+
+LATEST DETECTED DEADLOCK
+2026-10-20 05:29:41
+*** (1) TRANSACTION: ... inserting
+SQL: INSERT INTO trace_events (...) VALUES (...)
+*** (1) HOLDS THE LOCK(S):
+RECORD LOCKS ... index uk_trace_events_event_id of table `repopilot_it`.`trace_events`
+    trx id 156653 lock_mode X
+Record lock, heap no 1 PHYSICAL RECORD: n_fields 1; compact format; info bits 0
+ 0: len 8; hex 73757072656d756d; asc supremum;
+*** (1) WAITING FOR THIS LOCK TO BE GRANTED:
+RECORD LOCKS ... index uk_trace_events_event_id of table `repopilot_it`.`trace_events`
+    trx id 156653 lock_mode X insert intention waiting
+Record lock, heap no 1 ...  asc supremum;
+*** (2) TRANSACTION: ... inserting
+SQL: INSERT INTO trace_events (...) VALUES (...)
+
+关键：HOLDS 与 WAITING 都落在 uk_trace_events_event_id 的 supremum（尾间隙）。

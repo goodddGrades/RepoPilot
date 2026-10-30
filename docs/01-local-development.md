@@ -25,7 +25,9 @@ cp .env.example .env
 | `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` | 数据库端口与账号 | 13306 / repopilot / 模板值 |
 | `RABBITMQ_*` | 消息队列连接 | 5672 / 15672 |
 | `MINIO_*` | 对象存储地址与凭据 | 9000 / 9001 |
-| `REDIS_PORT` / `REDIS_PASSWORD` | 预留缓存 | 16379 |
+| `REDIS_PORT` / `REDIS_PASSWORD` | 分布式限流状态（TASK-014 起真实使用） | 16379 |
+| `REPOPILOT_RATE_LIMIT_*` | 入口限流开关、命名空间、环境段、各策略容量与补充速率 | 见 `.env.example` |
+| `WORKER_RATE_LIMIT_*` / `WORKER_JUDGE_RATE_LIMIT_*` | Worker 模型调用限流的故障模式、维度与额度 | 见 `repopilot-worker/.env.example` |
 | `SERVER_PORT` | 后端端口 | 8080 |
 | `WORKER_PORT` | Worker 端口 | 8000 |
 
@@ -70,7 +72,7 @@ cd repopilot-server
       { "name": "mysql", "status": "UP", "required": true, "detail": "MySQL 8.0.36, schema=repopilot", "latencyMs": 4 },
       { "name": "rabbitmq", "status": "UP", "required": true, "detail": "broker=3.13.7, vhost=/", "latencyMs": 9 },
       { "name": "flyway", "status": "UP", "required": true, "detail": "current=1, applied=1, pending=0", "latencyMs": 2 },
-      { "name": "redis", "status": "UNKNOWN", "required": false, "detail": "V1 预留：容器已编排，但服务端尚未接入 Redis 客户端", "latencyMs": 0 }
+      { "name": "redis", "status": "UP", "required": false, "detail": "PING PONG, 用途=分布式限流, version=7.2.5", "latencyMs": 1 }
     ]
   },
   "requestId": "…",

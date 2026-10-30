@@ -1,0 +1,533 @@
+openapi: 3.1.0
+info:
+  title: RepoPilot 实验报告与配对回归 API（TASK-010）
+  version: 1.0.0
+  description: |
+    本文件定义 TASK-010 实际实现的 path：单个实验的结构化报告。公共组件复用
+    `openapi-common.yaml`。
+
+    对应实现：
+    - `ReportController`、`ReportAggregationService`
+    - `EvaluationReportQueryService`（批次与结论的只读门面）
+    - `GateRuleReader`（门禁规则解析，配置 schema 归 `evaluationconfig` 模块所有）
+
+    ## 四条不可协商的语义
+
+    1. **每个比率都带分母**。`Ratio.numerator` 与 `Ratio.denominator` 一起出现；
+       `denominator = 0` 时 `rate` 为 `null` 而不是 0——"没有样本"和"样本全败"
+       是两件事，混淆会让空报告看起来像好消息。
+
+    2. **缺失与未知不进分子也不进分母，但必须单独计数**。`excluded`（UNKNOWN、
+       NOT_APPLICABLE、技术失败）与 `missing`（应有而完全没有）分开列出。
+       把缺失当0 补齐，等于把"没测"说成"测了并通过"。
+
+    3. **不同币种永不相加**。`CostBreakdown.byCurrency` 是按币种分列的列表，
+       没有"总额"字段。`Money.amount` 为 `null` 表示成本未知，不是 0。
+
+    4. **门禁结论不复用实验技术状态**。`gate.verdict` 是 PASS / FAIL / INCONCLUSIVE，
+       与 `experiments.status` 无关。实验 `COMPLETED` 只说明平台把该跑的跑完了，
+       不说明质量达标。
+
+    ## 关于批次
+
+    报告与比较都以**评测批次**为单位。不指定 `batchId` 时：
+    - `batchScope=INITIAL`（默认）：固定取初始批次。默认取初始而不是"最新"，
+      是为了让前后两次查看看到同一个分母——否则重评之后报告会悄悄换掉基数。
+    - `batchScope=LATEST`：取**最新创建**的批次，包含 RUNNING / FAILED，
+      **不回退**到上一个成功批次。批次失败本身是需要被看见的事实。
+
+    同一 Run 在不同批次的结果分别展示，不混进同一个分母。
+
+    ## 关于标注视图
+
+    `annotationView=AUTOMATIC`（默认）只看 `evaluation_results`。
+    `annotationView=REVIEWED` 时，人工复核**已通过**的槽位以人工结论为准，
+    未复核的仍用自动结论。人工结论**永不回写** `evaluation_results`。
+
+    ## 关于重复样本
+
+    配对键是 `(datasetCaseId, repeatIndex)`。同一 Case 的多次重复**不是独立样本**：
+    报告逐次配对展示，也按 Case 聚合，但不计算任何显著性指标——
+    契约明确"不能把同 Case 的相关重复当独立样本计算显著性"。
+servers:
+  - url: /
+paths:
+  /api/v1/experiments/{experimentId}/report:
+    get:
+      operationId: getExperimentReport
+      summary: 实验结构化报告
+      description: |
+        纯只读接口：不带 `Idempotency-Key`（报告不改变状态，重复调用天然幂等），
+        没有 POST / PUT / DELETE。
+
+        不传 `candidateTargetKey` 时不产出 `comparison` 与 `gate`——没有比较对象时
+        判"通过"等于没看数据就说达标。
+      parameters:
+        - name: experimentId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: batchId
+          in: query
+          required: false
+          description: 显式指定批次；不传则按 `batchScope` 解析
+          schema: { type: string }
+        - name: batchScope
+          in: query
+          required: false
+          description: |
+            `INITIAL`（默认，取初始批次）或 `LATEST`（取最新创建的批次，含 RUNNING/FAILED）。
+            其他取值返回 400，不静默降级。
+          schema:
+            type: string
+            enum: [INITIAL, LATEST]
+            default: INITIAL
+        - name: baselineTargetKey
+          in: query
+          required: false
+          description: 基线 Target key；不传取按 `targetKey` 排序的第一个 Target
+          schema: { type: string }
+        - name: candidateTargetKey
+          in: query
+          required: false
+          description: 候选 Target key；不传则不产出比较与门禁
+          schema: { type: string }
+        - name: annotationView
+          in: query
+          required: false
+          description: |
+            `AUTOMATIC`（默认，只看自动结论）或 `REVIEWED`（人工复核通过处以人工结论为准）。
+          schema:
+            type: string
+            enum: [AUTOMATIC, REVIEWED]
+            default: AUTOMATIC
+      responses:
+        '200':
+          description: 报告
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ExperimentReport' }
+        '400':
+          description: batchScope / annotationView 取值非法，或候选 Target 不属于该实验
+          content:
+            application/json:
+              schema: { $ref: './openapi-common.yaml#/components/schemas/ErrorResponse' }
+        '404':
+          description: 实验或批次不存在，或批次不属于该实验
+          content:
+            application/json:
+              schema: { $ref: './openapi-common.yaml#/components/schemas/ErrorResponse' }
+components:
+  schemas:
+    ExperimentReport:
+      type: object
+      required: [header, targets]
+      properties:
+        header: { $ref: '#/components/schemas/ReportHeader' }
+        targets:
+          type: array
+          description: 每个 Target 一份槽位级指标
+          items: { $ref: '#/components/schemas/TargetMetrics' }
+        comparison:
+          description: 配对比较；未指定候选 Target 时缺省
+          $ref: '#/components/schemas/PairComparison'
+        gate:
+          description: 质量门禁结论；未指定候选 Target 时缺省
+          $ref: '#/components/schemas/GateResult'
+
+    ReportHeader:
+      type: object
+      description: |
+        实验与批次上下文。前端必须原样展示，不允许自己推断——
+        尤其 `batchStatus`：批次是 RUNNING 就得显示 RUNNING。
+      required: [experimentId, experimentStatus, expectedRunCount, batchId, batchNo,
+                 batchScope, batchStatus, triggerType, planVersionId, gateConfigured,
+                 annotationView]
+      properties:
+        experimentId: { type: string }
+        experimentName: { type: string }
+        experimentStatus: { type: string }
+        expectedRunCount:
+          type: integer
+          format: int64
+          description: 创建实验时写下的应有槽位总数；覆盖率与完成率的分母来源
+        batchId: { type: string }
+        batchNo: { type: integer }
+        batchScope:
+          type: string
+          enum: [INITIAL, LATEST]
+          description: 实际使用的批次范围
+        batchStatus: { type: string }
+        triggerType: { type: string }
+        planVersionId: { type: string }
+        planVersion: { type: integer }
+        gateRuleVersion:
+          type: integer
+          description: 门禁规则版本；不同版本的结论不可直接并列比较
+        gateConfigured:
+          type: boolean
+          description: false 表示该方案版本没有 `gateRules`，门禁必然是 INCONCLUSIVE
+        annotationView:
+          type: string
+          enum: [AUTOMATIC, REVIEWED]
+
+    Ratio:
+      type: object
+      description: |
+        分子 / 分母 / 比率，以及没被计入分母的那些。
+        `denominator = 0` 时 `rate` 为 `null`——不是 0。
+      required: [numerator, denominator, excluded, missing]
+      properties:
+        numerator: { type: integer, format: int64 }
+        denominator:
+          type: integer, format: int64
+          description: 分母。0 时 `rate` 为 null
+        rate:
+          type: [number, 'null']
+          description: numerator / denominator；分母为 0 时为 null
+        excluded:
+          type: integer, format: int64
+          description: |
+            未计入分母但确实发生过的数量：UNKNOWN、NOT_APPLICABLE、技术失败。
+            必须展示，否则"通过率高"可能只是分母被悄悄缩小了。
+        missing:
+          type: integer, format: int64
+          description: 应有但完全没有数据的数量
+
+    Average:
+      type: object
+      description: 只统计有效样本，并如实报告有效样本数。
+      required: [validSampleCount, missingCount]
+      properties:
+        average:
+          type: [number, 'null']
+          description: 有效样本均值；无有效样本时为 null（不是 0）
+        validSampleCount: { type: integer, format: int64 }
+        missingCount:
+          type: integer, format: int64
+          description: 有槽位但分数为空的算子结论数；这些不参与平均，也不补 0
+
+    Percentiles:
+      type: object
+      description: |
+        p50 / p95 与有效样本数。取最近秩法（不做插值）：
+        耗时是真实测量值，插值出的 p95 没有任何一个 Run 真的花掉过。
+      required: [validSampleCount, missingCount]
+      properties:
+        p50: { type: [integer, 'null'], format: int64 }
+        p95: { type: [integer, 'null'], format: int64 }
+        validSampleCount:
+          type: integer, format: int64
+          description: 只统计有可靠 start/finish 的观察；未结束的不参与
+        missingCount: { type: integer, format: int64 }
+
+    Money:
+      type: object
+      description: |
+        一笔金额，**永远带币种**。不同币种不相加，平台也不做隐式兑换。
+      required: [knownCount, unknownCount]
+      properties:
+        amount:
+          type: [number, 'null']
+          description: 金额；未知时为 null（不是 0）
+        currency:
+          type: [string, 'null']
+          description: ISO 币种代码；以 `JUDGE:` 前缀表示来自评测算子侧
+        knownCount: { type: integer, format: int64 }
+        unknownCount: { type: integer, format: int64 }
+
+    CostBreakdown:
+      type: object
+      description: |
+        一个维度的成本汇总。**没有总额字段**——Agent 与 Judge 分开、
+        最终观察与全部尝试分开、币种分开，都是因为合并会掩盖真实开销。
+      required: [byCurrency, unknownCostCount, sampleCount]
+      properties:
+        byCurrency:
+          type: array
+          items: { $ref: '#/components/schemas/Money' }
+        unknownCostCount:
+          type: integer, format: int64
+          description: 成本未知的样本数；未知不参与求和，但必须报告
+        sampleCount: { type: integer, format: int64 }
+
+    VerdictDistribution:
+      type: object
+      description: |
+        某个算子 key 上的结论分布。四类结论分开列，不合并成"通过率"——
+        INDETERMINATE 是证据不足，NOT_APPLICABLE 是不适用，两者都不是"失败"。
+      required: [pass, fail, indeterminate, notApplicable, technicalFailure, missing]
+      properties:
+        pass: { type: integer, format: int64 }
+        fail: { type: integer, format: int64 }
+        indeterminate: { type: integer, format: int64 }
+        notApplicable: { type: integer, format: int64 }
+        technicalFailure:
+          type: integer, format: int64
+          description: Job 没跑完导致的失败；平台问题，不是被测对象的质量问题
+        missing: { type: integer, format: int64 }
+        passRate:
+          allOf:
+            - $ref: '#/components/schemas/Ratio'
+            - type: object
+              description: |
+                分母只含 PASS + FAIL。INDETERMINATE 与 NOT_APPLICABLE 计入 `excluded`，
+                技术失败与缺失计入 `missing`——都不进分母。
+
+    TargetMetrics:
+      type: object
+      description: 单个 Target 的槽位级指标。
+      required: [targetKey, agentVersionKnown, expectedSlotCount, observedSlotCount,
+                 slotCoverage, completedCount, failedCount, timedOutCount, cancelledCount,
+                 missingCount, technicalCompletion, taskSuccessCount, taskFailureCount,
+                 taskUnknownCount, taskNotApplicableCount, taskSuccessRate, verdicts,
+                 score, durationMs, finalObservationCost, allAttemptsCost]
+      properties:
+        targetKey: { type: string }
+        agentVersionId:
+          type: [string, 'null']
+          description: 离线导入的 Target 可能没有平台侧 Agent 版本
+        agentVersionLabel:
+          type: [string, 'null']
+          description: 形如 `my-agent v3`；未知时为 null
+        agentVersionKnown:
+          type: boolean
+          description: false 时本 Target 只参与描述性对比，不构成受控因果实验
+        expectedSlotCount:
+          type: integer, format: int64
+          description: |
+            应有槽位数，取 `expectedRunCount / Target 数`。
+            不用 `repeatCount × 用例数`：后者在离线只导入部分用例时会让分母变小、覆盖率虚高。
+        observedSlotCount: { type: integer, format: int64 }
+        slotCoverage: { $ref: '#/components/schemas/Ratio' }
+        completedCount: { type: integer, format: int64 }
+        failedCount: { type: integer, format: int64 }
+        timedOutCount: { type: integer, format: int64 }
+        cancelledCount: { type: integer, format: int64 }
+        missingCount:
+          type: integer, format: int64
+          description: 应有槽位减去实际观察到的数量
+        technicalCompletion:
+          allOf:
+            - $ref: '#/components/schemas/Ratio'
+            - type: object
+              description: 分母是 `expectedSlotCount`，不是已完成数
+        taskSuccessCount: { type: integer, format: int64 }
+        taskFailureCount: { type: integer, format: int64 }
+        taskUnknownCount: { type: integer, format: int64 }
+        taskNotApplicableCount: { type: integer, format: int64 }
+        taskSuccessRate:
+          allOf:
+            - $ref: '#/components/schemas/Ratio'
+            - type: object
+              description: 分母只含 SUCCESS + FAILURE；UNKNOWN 与 N-A 计入 excluded
+        verdicts:
+          type: object
+          description: 按 evaluatorKey 索引的结论分布
+          additionalProperties: { $ref: '#/components/schemas/VerdictDistribution' }
+        score: { $ref: '#/components/schemas/Average' }
+        durationMs: { $ref: '#/components/schemas/Percentiles' }
+        finalObservationCost:
+          allOf:
+            - $ref: '#/components/schemas/CostBreakdown'
+            - type: object
+              description: |
+                最终观察成本：只算被接受的那次 Attempt / 离线导入的 usage。
+                这是"这次实验花了多少"。
+        allAttemptsCost:
+          allOf:
+            - $ref: '#/components/schemas/CostBreakdown'
+            - type: object
+              description: |
+                平台实际执行成本：汇总所有 RunAttempt 与 JobAttempt（含被重试掉的）。
+                这是"平台实际支出了多少"。Judge 侧金额带 `JUDGE:` 前缀单列。
+
+    PairedSlot:
+      type: object
+      description: 单个配对槽位的结果，可下钻到两个 Run。
+      required: [caseKey, repeatIndex, outcome, note]
+      properties:
+        caseKey: { type: string }
+        repeatIndex: { type: integer }
+        baselineRunId: { type: [string, 'null'] }
+        candidateRunId: { type: [string, 'null'] }
+        baselineVerdict: { type: [string, 'null'] }
+        candidateVerdict: { type: [string, 'null'] }
+        baselineScore: { type: [number, 'null'] }
+        candidateScore: { type: [number, 'null'] }
+        scoreDelta:
+          type: [number, 'null']
+          description: 候选减基线；任一侧无分时为 null（不按 0 处理）
+        outcome: { $ref: '#/components/schemas/Outcome' }
+        note:
+          type: string
+          description: 人可读的判定依据，直接展示，不要前端自己重新措辞
+
+    Outcome:
+      type: string
+      enum: [REGRESSION, IMPROVEMENT, STABLE, SINGLE_SIDED, TECHNICAL_ERROR]
+      description: |
+        - `REGRESSION`：基线 PASS → 候选 FAIL。门禁看的就是这个。
+        - `IMPROVEMENT`：基线 FAIL → 候选 PASS。
+        - `STABLE`：双方结论一致（含都 FAIL、都 INDETERMINATE）。
+        - `SINGLE_SIDED`：只有一方有观察，或任一侧没有可判定结论。
+          既不算回归也不算改善——缺失不能当"没问题"。
+        - `TECHNICAL_ERROR`：任一侧 Job 技术失败，没有质量结论可比。
+          **不是**质量回归，算进去会让人去查错方向。
+
+    PairComparison:
+      type: object
+      description: |
+        一次配对比较。`totalSlots`（配对键空间大小）与 `pairedSlots`（真正双方都有观察）
+        必须同时展示——只给"回归 2 个"而不说总共有多少槽位，读者无法判断严重性。
+      required: [baselineTargetKey, candidateTargetKey, baselineAgentVersionKnown,
+                 candidateAgentVersionKnown, controlledComparison, totalSlots, pairedSlots,
+                 singleSidedSlots, technicalErrorSlots, regressions, improvements, stableSlots,
+                 validPairCoverage, slots]
+      properties:
+        baselineTargetKey: { type: string }
+        candidateTargetKey: { type: string }
+        baselineAgentVersion: { type: [string, 'null'] }
+        candidateAgentVersion: { type: [string, 'null'] }
+        baselineAgentVersionKnown: { type: boolean }
+        candidateAgentVersionKnown: { type: boolean }
+        controlledComparison:
+          type: boolean
+          description: |
+            两侧都有平台侧 Agent 版本时为 true。false 表示这是描述性对比，
+            **不得**据此宣称因果优劣。
+        incomparabilityReason:
+          type: [string, 'null']
+          description: 不可比原因；`controlledComparison=true` 时为 null
+        totalSlots:
+          type: integer, format: int64
+          description: 两侧配对键的并集大小；单侧缺失不会让它变小
+        pairedSlots: { type: integer, format: int64 }
+        singleSidedSlots: { type: integer, format: int64 }
+        technicalErrorSlots: { type: integer, format: int64 }
+        regressions: { type: integer, format: int64 }
+        improvements: { type: integer, format: int64 }
+        stableSlots: { type: integer, format: int64 }
+        validPairCoverage:
+          allOf:
+            - $ref: '#/components/schemas/Ratio'
+            - type: object
+              description: |
+                分母是 `totalSlots`（配对键空间），不是 `pairedSlots`。
+                否则单侧缺失会从分母里消失，"没数据"就被算成"没问题"。
+        slots:
+          type: array
+          items: { $ref: '#/components/schemas/PairedSlot' }
+        meanBaselineScore: { type: [number, 'null'] }
+        meanCandidateScore: { type: [number, 'null'] }
+        meanScoreDelta: { type: [number, 'null'] }
+
+    GateFinding:
+      type: object
+      required: [rule, severity, message, offendingRunIds]
+      properties:
+        rule:
+          type: string
+          description: 规则名（`maxRegressions` / `minValidPairCoverage` / …）
+        severity:
+          type: string
+          enum: [BLOCKING, INFO, WARNING]
+          description: |
+            `BLOCKING` 会阻止判 PASS（导致 FAIL 或 INCONCLUSIVE）；
+            `WARNING` / `INFO` 只提示，不影响结论。
+        message: { type: string }
+        offendingRunIds:
+          type: array
+          items: { type: string }
+          description: 违规 Run，可直接下钻
+
+    GateResult:
+      type: object
+      description: |
+        质量门禁结论。**不复用 `experiments.status`**：
+        技术完成与质量达标是两件事。
+
+        判定顺序不可调换：
+        1. 有明确规则违规 → `FAIL`
+        2. 无违规但证据不足 → `INCONCLUSIVE`
+        3. 其余 → `PASS`
+
+        先判违规是必要的：若先判覆盖不足，一个"既有3 个回归、覆盖率又不够"的报告
+        会被降级成"证据不足"，那 3 个回归就没人看了。
+
+        阈值是方案配置，**不暗示统计显著性**。
+      required: [verdict, pairedSlots, totalSlots, violations, insufficientEvidence, passed]
+      properties:
+        verdict:
+          type: string
+          enum: [PASS, FAIL, INCONCLUSIVE]
+        ruleVersion:
+          type: [integer, 'null']
+          description: 门禁规则版本；不同版本的结论不可直接并列比较
+        ruleSummary:
+          type: [string, 'null']
+          description: 生效规则的原文摘要，让"为什么是这个结论"可追溯
+        pairedSlots: { type: integer, format: int64 }
+        totalSlots: { type: integer, format: int64 }
+        validPairCoverage: { type: [number, 'null'] }
+        violations:
+          type: array
+          description: 明确违规；非空即 FAIL
+          items: { $ref: '#/components/schemas/GateFinding' }
+        insufficientEvidence:
+          type: array
+          description: 证据不足原因；含 BLOCKING 项且无违规时判 INCONCLUSIVE
+          items: { $ref: '#/components/schemas/GateFinding' }
+        passed:
+          type: array
+          description: 已满足的规则，让"通过"也有依据而不只是一个绿勾
+          items: { $ref: '#/components/schemas/GateFinding' }
+
+    GateRules:
+      type: object
+      description: |
+        方案版本 `configJson.gateRules` 的形状。**这是配置模块拥有的 schema**，
+        由 `GateRuleReader` 解析；报告只消费已类型化的结果。
+
+        规则随方案版本冻结：改阈值必须发新版本，否则历史批次的门禁结论无法复现。
+      properties:
+        ruleVersion:
+          type: integer
+          description: |
+            规则版本号。规则字段含义变了（哪怕阈值没变），旧结论就不能与新结论并列，
+            报告靠它把不同规则版本的结论隔开。
+        evaluatorKey:
+          type: [string, 'null']
+          description: 参与门禁的算子 key；缺省表示用批次内全部 required 算子
+        maxRegressions:
+          type: [integer, 'null']
+          description: 允许的最大回归数（PASS→FAIL 的配对数量）。超过即 FAIL
+        minValidPairCoverage:
+          type: [number, 'null']
+          description: |
+            最低有效配对覆盖率（0~1）。**低于此值判 INCONCLUSIVE 而不是 FAIL**——
+            样本太少时就算一个回归都没观察到，也不能说明没问题。
+        indeterminateCountsAsFailure:
+          type: [boolean, 'null']
+          description: |
+            INDETERMINATE 是否视同未通过。默认否（走覆盖率判断）：
+            证据不足是"不知道"，不是"没通过"。
+        notApplicableHandling:
+          type: [string, 'null']
+          enum: [EXCLUDE, COUNT_AS_NOT_PASS, FAIL, null]
+          description: |
+            NOT_APPLICABLE 的处理。默认 `EXCLUDE`（不计入分母，只报数量）：
+            不适用就是这次评测没有意义，既不该算通过也不该算失败。
+        costBudget:
+          type: [number, 'null']
+          description: |
+            可选成本预算（对候选 Target 的**最终观察成本**）。
+            配置它就必须同时配 `costCurrency`——没有币种的预算无法与任何金额比较。
+        costCurrency:
+          type: [string, 'null']
+          description: 预算币种；只与同币种金额比较，不同币种不相加、不隐式兑换

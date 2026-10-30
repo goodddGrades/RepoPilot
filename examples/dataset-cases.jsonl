@@ -1,1 +1,1 @@
-{"schemaVersion": 1, "caseKey": "sum-001", "taskType": "QA", "input": {"question": "1加1等于多少？"}, "expected": {"answer": "2"}, "metadata": {"tag": "smoke"}}
+{"schemaVersion": 1, "caseKey": "sum-001", "taskType": "AGENT_TASK", "input": {"question": "1加1等于多少？"}, "expected": {"answer": "2"}, "metadata": {"tag": "smoke"}}

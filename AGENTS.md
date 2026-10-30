@@ -55,7 +55,7 @@ RepoPilot 是面向 Agent 的**轨迹管理、自动化评测与质量分析平�
 | 消息 | RabbitMQ | 3.13.7（容器） |
 | Worker | Python 3.11+ + FastAPI | FastAPI 0.143.3，pydantic 2.14.1 |
 | 前端 | Vue3 + TypeScript + Vite + Element Plus + Pinia + Vue Router + Axios | 见 `repopilot-web/package.json` |
-| 基础设施 | MySQL 8 / RabbitMQ / MinIO / Redis（预留） | 见 `deploy/docker-compose.yml` |
+| 基础设施 | MySQL 8 / RabbitMQ / MinIO / Redis（TASK-014 起承载分布式限流） | 见 `deploy/docker-compose.yml` |
 
 明确**禁止**引入：微服务拆分、Spring Cloud、Kafka、ClickHouse、Elasticsearch、Kubernetes。
 
@@ -64,7 +64,13 @@ RepoPilot 是面向 Agent 的**轨迹管理、自动化评测与质量分析平�
 - MySQL、MinIO 是必要依赖。
 - RabbitMQ 容器与连通性检查已就绪（本机 3.13.7 已实跑，`verify` 中 readiness 全依赖 UP 用例通过），
   但**业务发布/消费只在 TASK-011 实现**；在此之前不得声明交换机或队列。
-- Redis 仅编排实例，Java 不引入客户端；`/api/health` 中固定 `UNKNOWN` 并标注"预留"。
+- Redis：**TASK-014 起作为分布式限流的共享状态存储**，Java 与 Python 两端各有一个客户端，
+  共用同一份 Lua 脚本（`repopilot-server/src/main/resources/ratelimit/token_bucket.lua` 与
+  `repopilot-worker/app/ratelimit/token_bucket.lua` 逐字节相同）。Redis 只存令牌桶状态，
+  **不承载任何业务数据**，业务事实的唯一来源仍是 MySQL。`/api/health` 中 Redis 由真实 `PING` 探测，
+  不再固定 `UNKNOWN`；若改成不做真实探测，必须在本节说明原因。
+  （原条款为「Redis 仅编排实例，Java 不引入客户端；`/api/health` 中固定 `UNKNOWN` 并标注"预留"」，
+  由 TASK-014 按 §0 冲突裁决流程显式修订。）
 
 ---
 

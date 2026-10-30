@@ -67,11 +67,15 @@ class PersistenceMappingIT extends AbstractDatabaseIT {
 
     @Test
     void malformedUlidShouldBeRejectedBeforeHittingDatabase() {
-        Agent agent = agent("not-a-ulid", "CODE-X");
+        // 断言按 code 限定，而不是 COUNT(*) 全表：其它用例（AgentApiIT）会提交真实数据，
+        // 全表计数会把"别人写了数据"误判成"这次非法插入落库了"。
+        String code = "CODE-" + Ulid.newId();
+        Agent agent = agent("not-a-ulid", code);
 
         assertThatThrownBy(() -> agentMapper.insert(agent))
                 .hasStackTraceContaining("非法的 ULID");
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agents", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM agents WHERE code = ?", Integer.class, code))
+                .isZero();
     }
 
     @Test

@@ -1,0 +1,542 @@
+openapi: 3.1.0
+info:
+  title: RepoPilot 评测执行 API（TASK-007）
+  version: 1.0.0
+  description: |
+    本文件定义 TASK-007 实际实现的 paths：评测批次的创建与查询、Worker 的评测任务领取协议
+    （与在线执行共用 `POST /internal/v1/work/claim`，用 `kind` 区分）以及评测 Attempt 的
+    心跳/完成/失败回调。公共组件复用 `openapi-common.yaml`。
+
+    对应实现：
+    - `EvaluationBatchController`、`EvaluationBatchService`、`RunController`（`GET /runs/{id}/jobs` 扩展）
+    - `WorkerController`（`/internal/v1/job-attempts/**`）、`EvaluationClaimService`、`JobAttemptService`
+    - `EvidenceValidator`（证据归属校验）、`EvaluationAggregationService`（Run/批次收口）
+
+    与 TASK-004/005/006 的分工：
+    - 在线执行与离线导入都只负责把 Run 推进到 `EVALUATING` 并生成 `PENDING` Job；
+    - 评分、结论与 Attempt 历史由本文件的评测协议产生；
+    - `verdict=FAIL` 是**质量**失败（Job 仍 COMPLETED），只有 `/fail` 才是技术失败。
+servers:
+  - url: /
+paths:
+  /api/v1/experiments/{id}/evaluation-batches:
+    post:
+      operationId: createEvaluationBatch
+      summary: 新建重评批次
+      description: |
+        为已封口的 Run 重新执行一个评测方案版本。`INITIAL` 批次只能由实验启动事务创建，
+        接口只接受 `REEVALUATION` / `MANUAL`。
+
+        选择范围二选一：`runIds` 显式列表，或 `filter` 按属性筛选；`filter: {}` 表示"全部可重评 Run"。
+        Run 必须属于该实验且已封口（`sealedAt` 非空）；实验处于 `DRAFT` / `CANCELLED` 时拒绝。
+
+        新批次写入独立的 Job 与结果行，历史批次的 `evaluation_results` 不会被覆盖；
+        同一 `Idempotency-Key` 与正文重发返回原批次（不新建）。
+      parameters:
+        - $ref: './openapi-execution.yaml#/components/parameters/ExperimentId'
+        - $ref: './openapi-common.yaml#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateBatchRequest' }
+      responses:
+        '202':
+          description: 已受理（批次已创建，Job 等待 Worker 领取）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Batch' }
+        '400':
+          $ref: './openapi-execution.yaml#/components/responses/ValidationError'
+        '409':
+          $ref: './openapi-execution.yaml#/components/responses/Conflict'
+    get:
+      operationId: listEvaluationBatches
+      summary: 实验的评测批次列表（批次号倒序）
+      parameters:
+        - $ref: './openapi-execution.yaml#/components/parameters/ExperimentId'
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [PENDING, RUNNING, COMPLETED, PARTIAL_FAILED, FAILED, CANCELLED]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/Batch' }
+                          page: { type: integer }
+                          pageSize: { type: integer }
+                          total: { type: integer }
+
+  /api/v1/evaluation-batches/{id}:
+    get:
+      operationId: getEvaluationBatch
+      summary: 批次详情（含 Job 状态计数）
+      parameters:
+        - $ref: '#/components/parameters/BatchId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Batch' }
+        '404':
+          $ref: './openapi-execution.yaml#/components/responses/ValidationError'
+
+  /api/v1/evaluation-batches/{id}/runs:
+    get:
+      operationId: listEvaluationBatchRuns
+      summary: 批次内的 Run（以 `evaluation_batch_runs` 为准，不从 selection 反推）
+      parameters:
+        - $ref: '#/components/parameters/BatchId'
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              $ref: './openapi-execution.yaml#/components/schemas/Run'
+                          page: { type: integer }
+                          pageSize: { type: integer }
+                          total: { type: integer }
+
+  /api/v1/evaluation-batches/{id}/cancel:
+    post:
+      operationId: cancelEvaluationBatch
+      summary: 取消未终态的重评批次
+      description: |
+        `INITIAL` 批次随实验取消，不能单独取消。`PENDING` Job 置 `SKIPPED`，
+        `RUNNING` Job 与其 Attempt 置失败（`errorCode=CANCELLED`）。已终态批次返回 409。
+      parameters:
+        - $ref: '#/components/parameters/BatchId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Batch' }
+        '409':
+          $ref: './openapi-execution.yaml#/components/responses/Conflict'
+
+  /internal/v1/job-attempts/{id}/heartbeat:
+    post:
+      operationId: heartbeatJobAttempt
+      summary: 评测 Attempt 续租
+      description: |
+        规则与在线执行一致：续租到 `min(now + lease, deadlineAt)`；租约过期、被取代、
+        Attempt 非 `RUNNING` 或批次/实验已取消都返回 409 `STALE_ATTEMPT`。
+      security:
+        - WorkerBearer: []
+      parameters:
+        - $ref: './openapi-execution.yaml#/components/parameters/AttemptId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [leaseToken]
+              properties:
+                leaseToken: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: './openapi-execution.yaml#/components/schemas/HeartbeatResult' }
+        '409':
+          $ref: './openapi-execution.yaml#/components/responses/StaleAttempt'
+
+  /internal/v1/job-attempts/{id}/complete:
+    post:
+      operationId: completeJobAttempt
+      summary: 提交评测结论
+      description: |
+        提交结论而不是"跑完了"。写库前的硬校验：
+        - `score` 必须在 0~1 且最多 5 位小数（列定义 `DECIMAL(6,5)`），否则 400；
+        - `generatedBy` 必须与算子类型匹配（`RULE/TRACE/COST→RULE`，`TEST→TEST`，`LLM_JUDGE→LLM`）；
+        - `evidence` 只能引用本 Run 的事件、附件、数据集字段与 usage 字段（跨 Run 引用 400）；
+        - 每个 Job 至多一条结果，唯一键 `(job_id)` 冲突返回 409 `RESOURCE_CONFLICT`。
+
+        幂等：同 Attempt + 同正文（不含 `leaseToken`）重放返回原回执；正文不同或
+        Job 已被后续 Attempt 接管返回 409 `STALE_ATTEMPT`。
+      security:
+        - WorkerBearer: []
+      parameters:
+        - $ref: './openapi-execution.yaml#/components/parameters/AttemptId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/JobCompleteRequest' }
+      responses:
+        '200':
+          description: OK（含同正文重放）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/JobCompleteResult' }
+        '400':
+          $ref: './openapi-execution.yaml#/components/responses/ValidationError'
+        '409':
+          $ref: './openapi-execution.yaml#/components/responses/StaleAttempt'
+
+  /internal/v1/job-attempts/{id}/fail:
+    post:
+      operationId: failJobAttempt
+      summary: 报告技术失败
+      description: |
+        与在线执行的 `/fail` 同构。`retryableHint=true` 且还有重试预算（`maxAttemptsPerJob`）
+        时 Job 释放等待退避，`retryScheduled=true` 并给出 `nextRetryAt`；预算耗尽则 Job 失败。
+
+        重复提交同正文只在"Job 当前状态仍由这次失败造成"时按幂等重放返回 200；
+        Job 已被后续 Attempt 完成或接管后，晚到的同文回执返回 409 `STALE_ATTEMPT`，
+        不允许旧的失败回执以幂等名义改动成功历史。
+      security:
+        - WorkerBearer: []
+      parameters:
+        - $ref: './openapi-execution.yaml#/components/parameters/AttemptId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/JobFailRequest' }
+      responses:
+        '200':
+          description: OK（含幂等重放）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './openapi-common.yaml#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/JobFailResult' }
+        '400':
+          $ref: './openapi-execution.yaml#/components/responses/ValidationError'
+        '409':
+          $ref: './openapi-execution.yaml#/components/responses/StaleAttempt'
+
+components:
+  securitySchemes:
+    WorkerBearer:
+      type: http
+      scheme: bearer
+      description: Worker 专用凭证；能力声明里的 `EVAL:<key>` 决定可领取哪些算子任务。
+
+  parameters:
+    BatchId:
+      in: path
+      name: id
+      required: true
+      schema: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+
+  schemas:
+    EvaluationInput:
+      type: object
+      description: |
+        `kind=EVALUATION` 任务的输入。在线与离线 Run 走同一个入口，差异只体现在
+        `acceptedRunSnapshot.acceptedAttemptId`（离线为缺省）与轨迹读取路径上。
+      required: [schemaVersion, jobId, batchId, executionOrder, required, evaluator,
+                config, acceptedRunSnapshot]
+      properties:
+        schemaVersion: { type: string, const: '1' }
+        jobId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        batchId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        executionOrder:
+          type: integer
+          description: 同一 Run 内按此顺序串行；后端不会在同一 Run 上并行发放更晚的 Job。
+        required:
+          type: boolean
+          description: 必需要求的算子失败会让 Run 判 FAILED；非必需只影响批次汇总。
+        evaluator:
+          type: object
+          required: [key, version, type]
+          properties:
+            key: { type: string }
+            version: { type: integer }
+            type:
+              type: string
+              enum: [RULE, TRACE, COST, TEST, LLM_JUDGE]
+            implementationRef:
+              type: string
+              description: 算子实现定位（内置为 `builtin://evaluators/<key>`），Worker 按此解析。
+        config:
+          type: object
+          description: 方案项绑定的算子配置；算子自己校验，配置非法按技术失败处理，不猜默认值。
+        acceptedRunSnapshot:
+          $ref: '#/components/schemas/RunSnapshot'
+
+    RunSnapshot:
+      type: object
+      description: |
+        评测所依据的 Run 快照。后端在此处给出轨迹的**读取契约**而不是全量事件：
+        `trace.eventsUrl` 指向统一轨迹查询接口，`manifestSha256` 让 Worker 能发现
+        "读到的轨迹与登记时不一致"，避免在残缺轨迹上编造结论。
+      required: [runId, mode, taskOutcome, trace]
+      properties:
+        runId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        mode: { type: string, enum: [ONLINE, OFFLINE] }
+        taskOutcome:
+          type: string
+          description: Run 的业务结局；业务失败（FAILURE/TIMEOUT）同样进入评测。
+        acceptedAttemptId:
+          type: string
+          description: 在线 Run 的接受 Attempt；离线 Run 无此字段（NON_NULL 序列化下缺省）。
+        output: { type: object }
+        outputArtifactId: { type: [string, 'null'] }
+        usage: { type: object }
+        datasetCase: { $ref: './openapi-execution.yaml#/components/schemas/CasePayload' }
+        trace: { $ref: '#/components/schemas/TraceRef' }
+
+    TraceRef:
+      type: object
+      required: [sealed, eventsUrl, eventCount, manifestSha256]
+      properties:
+        sealed:
+          type: boolean
+          description: Run 是否已封口；未封口不会产生评测 Job。
+        eventsUrl:
+          type: string
+          description: |
+            轨迹读取路径，形如 `/api/v1/runs/{id}/events?limit=200`；
+            在线 Run 附带 `attemptId` 限定到接受的那次尝试。
+        eventCount: { type: integer, minimum: 0 }
+        manifestSha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: 事件 id 列表的摘要；Worker 读取后必须核对，不一致按不可重试失败处理。
+
+    JobResult:
+      type: object
+      description: 评测结论（每个 Job 至多一条，由数据库唯一键保证）。
+      required: [id, jobAttemptId, verdict, generatedBy, createdAt]
+      properties:
+        id: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        jobAttemptId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        verdict:
+          type: string
+          enum: [PASS, FAIL, INDETERMINATE, NOT_APPLICABLE]
+        score: { type: [number, 'null'], minimum: 0, maximum: 1 }
+        reason: { type: [string, 'null'] }
+        evidence:
+          type: array
+          items: { type: object }
+        result: { type: object }
+        generatedBy:
+          type: string
+          enum: [RULE, TEST, LLM, MOCK]
+        createdAt: { type: string, format: date-time }
+
+    JobAttempt:
+      type: object
+      description: 评测 Attempt 历史；超时或被回收的 Attempt 也保留错误信息，不做覆盖。
+      required: [id, attemptNo, workerId, status]
+      properties:
+        id: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        attemptNo: { type: integer, minimum: 1 }
+        workerId: { type: string }
+        status:
+          type: string
+          enum: [RUNNING, COMPLETED, FAILED, TIMED_OUT, CANCELLED]
+        startedAt: { type: [string, 'null'], format: date-time }
+        finishedAt: { type: [string, 'null'], format: date-time }
+        errorCode: { type: [string, 'null'] }
+        errorMessage: { type: [string, 'null'] }
+
+    CreateBatchRequest:
+      type: object
+      required: [planVersionId, triggerType]
+      properties:
+        planVersionId:
+          type: string
+          description: 必须处于 PUBLISHED 的方案版本；算子按该版本的方案项执行。
+        triggerType:
+          type: string
+          enum: [REEVALUATION, MANUAL]
+        parentBatchId:
+          type: string
+          description: 可选。必须属于同一实验，用于串联重评链。
+        runIds:
+          type: array
+          maxItems: 10000
+          items: { type: string }
+          description: 与 `filter` 二选一；每个 Run 必须属于该实验且已封口。
+        filter:
+          type: object
+          description: 与 `runIds` 二选一；空对象表示"全部可重评 Run"。创建时一次性解析为具体行。
+          properties:
+            targetId: { type: string }
+            caseKey: { type: string }
+            status: { type: string }
+            taskOutcome: { type: string }
+
+    Batch:
+      type: object
+      required: [id, experimentId, evaluationPlanVersionId, batchNo, triggerType, status,
+                expectedJobCount, runCount, jobs, createdAt]
+      properties:
+        id: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        experimentId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        evaluationPlanVersionId: { $ref: './openapi-common.yaml#/components/schemas/Ulid' }
+        batchNo: { type: integer }
+        triggerType:
+          type: string
+          enum: [INITIAL, REEVALUATION, MANUAL]
+        parentBatchId: { type: [string, 'null'] }
+        status:
+          type: string
+          enum: [PENDING, RUNNING, COMPLETED, PARTIAL_FAILED, FAILED, CANCELLED]
+        expectedJobCount:
+          type: integer
+          description: 创建时应有的 Job 数（Run 数 × 方案算子数），用于判断是否有任务被跳过。
+        runCount: { type: integer }
+        jobs: { $ref: '#/components/schemas/JobCounts' }
+        selection:
+          description: 创建时的选择依据（原样回传，至多前 100 个 runId）。范围真相始终是批次成员表。
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: [string, 'null'], format: date-time }
+        finishedAt: { type: [string, 'null'], format: date-time }
+
+    JobCounts:
+      type: object
+      required: [total, pending, running, completed, failed, skipped]
+      properties:
+        total: { type: integer }
+        pending: { type: integer }
+        running: { type: integer }
+        completed: { type: integer }
+        failed: { type: integer }
+        skipped: { type: integer }
+
+    JobCompleteRequest:
+      type: object
+      required: [leaseToken, verdict, result, generatedBy]
+      properties:
+        leaseToken: { type: string }
+        verdict:
+          type: string
+          enum: [PASS, FAIL, INDETERMINATE, NOT_APPLICABLE]
+          description: |
+            `PASS/FAIL` 是质量结论（Job 仍 COMPLETED）；`INDETERMINATE` 表示已评测但无法下结论；
+            `NOT_APPLICABLE` 表示输入不满足算子前提（例如缺少 ground truth），不是失败。
+        score:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+          multipleOf: 0.00001
+          description: 归一分；`NOT_APPLICABLE` / `INDETERMINATE` 应留空，不允许写 0 冒充评分。
+        reason: { type: [string, 'null'], maxLength: 4000 }
+        evidence:
+          type: array
+          maxItems: 50
+          description: |
+            可追溯依据，只能引用本 Run：`{type:event|artifact|outputPath|usagePath|casePath,...}`。
+            `casePath` 限 `input.` / `expected.` / `metadata.` 前缀，`usagePath` 限 `usage.` 前缀，
+            路径不得含 `..` 或跨 Run 引用。
+        result:
+          type: object
+          description: 算子产出的结构化结果，写入 `evaluation_results.result_json`。
+        generatedBy:
+          type: string
+          enum: [RULE, TEST, LLM]
+        usage: { type: object }
+
+    JobCompleteResult:
+      type: object
+      required: [attemptId, status, jobId]
+      properties:
+        attemptId: { type: string }
+        status:
+          type: string
+          enum: [COMPLETED]
+        jobId: { type: string }
+
+    JobFailRequest:
+      type: object
+      required: [leaseToken, errorCode]
+      properties:
+        leaseToken: { type: string }
+        errorCode:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{0,63}$'
+          description: |
+            技术失败码。`TIMED_OUT` / `TIMEOUT` / `DEADLINE_EXCEEDED` 记为 Attempt 超时；
+            其余记为 FAILED。业务判定失败不走本接口。
+        errorMessage: { type: [string, 'null'], maxLength: 1024 }
+        retryableHint:
+          type: boolean
+          description: 仅"是否值得重试"的建议；最终是否重试由后端预算与退避决定。
+        usage: { type: object }
+
+    JobFailResult:
+      type: object
+      required: [attemptId, status, retryScheduled]
+      properties:
+        attemptId: { type: string }
+        status:
+          type: string
+          enum: [FAILED, TIMED_OUT]
+        jobId: { type: [string, 'null'] }
+        retryScheduled: { type: boolean }
+        nextRetryAt:
+          type: [string, 'null']
+          format: date-time

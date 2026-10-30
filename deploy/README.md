@@ -24,7 +24,7 @@ docker compose --env-file .env -f deploy/docker-compose.yml down -v    # 连数�
 | MySQL | `mysql:8.0.36` | `${MYSQL_PORT:-13306}` | 3306 | 业务库 `repopilot`，UTC 时区，utf8mb4 |
 | RabbitMQ | `rabbitmq:3.13.7-management` | `${RABBITMQ_PORT:-5672}` / `${RABBITMQ_MANAGEMENT_PORT:-15672}` | 5672 / 15672 | 任务调度消息（V1 仅连通性） |
 | MinIO | `minio/minio:RELEASE.2025-04-22T22-12-26Z` | `${MINIO_API_PORT:-9000}` / `${MINIO_CONSOLE_PORT:-9001}` | 9000 / 9001 | 轨迹附件、日志、报告对象存储 |
-| Redis | `redis:7.2.5-alpine` | `${REDIS_PORT:-16379}` | 6379 | **V1 预留**，服务端尚未接入 |
+| Redis | `redis:7.2.5-alpine` | `${REDIS_PORT:-16379}` | 6379 | **TASK-014 起承载分布式限流的令牌桶状态**（Java 与 Python 共用；不存业务数据） |
 
 宿主机端口刻意避开 3306 / 6379 等常见默认端口，避免与本机已安装的 MySQL / Redis 冲突。
 所有端口都可以在 `.env` 中覆盖；如果改了端口，请同步修改 `.env` 里的

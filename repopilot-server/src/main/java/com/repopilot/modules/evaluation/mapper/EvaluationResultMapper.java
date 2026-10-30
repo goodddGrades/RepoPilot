@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -48,4 +49,42 @@ public interface EvaluationResultMapper {
               WHERE id = #{id}
             """)
     Optional<EvaluationResult> findById(@Param("id") String id);
+
+    // ================================================================== TASK-007
+
+    /** 每个 Job 至多一条 Result（唯一键 {@code job_id}），这里按 Job 读取。 */
+    @Select("""
+            SELECT id,
+                   job_id,
+                   job_attempt_id,
+                   verdict,
+                   score,
+                   reason,
+                   evidence_json,
+                   result_json,
+                   generated_by,
+                   created_at
+              FROM evaluation_results
+             WHERE job_id = #{jobId}
+            """)
+    Optional<EvaluationResult> findByJobId(@Param("jobId") String jobId);
+
+    @Select("""
+            <script>
+            SELECT id,
+                   job_id,
+                   job_attempt_id,
+                   verdict,
+                   score,
+                   reason,
+                   evidence_json,
+                   result_json,
+                   generated_by,
+                   created_at
+              FROM evaluation_results
+             WHERE job_id IN
+               <foreach collection="jobIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<EvaluationResult> findByJobIds(@Param("jobIds") List<String> jobIds);
 }

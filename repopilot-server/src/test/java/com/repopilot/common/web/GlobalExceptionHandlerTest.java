@@ -2,10 +2,14 @@ package com.repopilot.common.web;
 
 import com.repopilot.common.api.ErrorCode;
 import com.repopilot.common.exception.BusinessException;
+import com.repopilot.common.ratelimit.RateLimitDecision;
+import com.repopilot.common.ratelimit.RateLimitUnavailableException;
+import com.repopilot.common.ratelimit.RateLimitedException;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -20,6 +24,7 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -81,6 +86,38 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.code").value(ErrorCode.BAD_REQUEST.name()));
     }
 
+    /**
+     * 超限是 429，且 {@code Retry-After} 来自真实计算。
+     *
+     * <p>这条与下一条（503）必须分开断言：把两者合并成同一个状态码，
+     * 运维就分不清"业务被打满"和"Redis 挂了"。
+     */
+    @Test
+    void shouldMapRateLimitedToTooManyRequestsWithRetryAfter() throws Exception {
+        mockMvc.perform(post("/test/rate-limited"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.code").value(ErrorCode.RATE_LIMITED.name()))
+                // 2300ms 缺口向上取整 -> 3 秒，不是 2 也不是 0。
+                .andExpect(header().string(HttpHeaders.RETRY_AFTER, "3"))
+                .andExpect(header().string("X-RateLimit-Policy", "api-write"))
+                .andExpect(header().string("X-RateLimit-Limit", "30"))
+                .andExpect(header().string("X-RateLimit-Remaining", "0"));
+    }
+
+    /**
+     * 限流依赖不可用是 503，不是 429。
+     *
+     * <p>客户端并没有超速，重试也没用；用 429 会误导客户端延长退避，
+     * 还会让监控把基础设施故障统计成业务限流。
+     */
+    @Test
+    void shouldMapRateLimitUnavailableToServiceUnavailableNotTooManyRequests() throws Exception {
+        mockMvc.perform(get("/test/rate-limit-unavailable"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value(ErrorCode.SERVICE_UNAVAILABLE.name()))
+                .andExpect(header().string(HttpHeaders.RETRY_AFTER, "1"));
+    }
+
     @RestController
     @RequestMapping("/test")
     static class FailingController {
@@ -103,6 +140,18 @@ class GlobalExceptionHandlerTest {
         @PostMapping("/validation")
         String validation(@Valid @RequestBody Payload payload) {
             return payload.name();
+        }
+
+        @PostMapping("/rate-limited")
+        String rateLimited() {
+            throw new RateLimitedException(new RateLimitDecision(
+                    false, 0L, 30L, 2300L, "api-write", "ip:10.0.0.1"));
+        }
+
+        @GetMapping("/rate-limit-unavailable")
+        String rateLimitUnavailable() {
+            throw new RateLimitUnavailableException("judge-model",
+                    new IllegalStateException("Unable to connect to Redis"));
         }
     }
 

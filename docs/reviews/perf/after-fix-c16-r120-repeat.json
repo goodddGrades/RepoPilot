@@ -1,0 +1,117 @@
+{
+  "scenario": "baseline",
+  "experimentId": "01M5B3D5CFQJRDS6VA7W2D4Z4R",
+  "timestamp": "2026-10-19T22:09:48.639522200Z",
+  "hardware": {
+    "logicalCores": 16,
+    "maxHeapMb": 4028,
+    "os": "Windows 10 10.0",
+    "java": "21.0.10",
+    "jvmArgs": "C:\\Users\\15334\\AppData\\Local\\Temp\\surefire1034592868262214626\\surefirebooter-20261020060919920_3.jar C:\\Users\\15334\\AppData\\Local\\Temp\\surefire1034592868262214626 2026-10-20T06-09-19_604-jvmRun1 surefire-20261020060919920_1tmp surefire_0-20261020060919920_2tmp"
+  },
+  "parameters": {
+    "concurrency": 16,
+    "executedRuns": 120,
+    "eventsPerRun": 40,
+    "runs": 120,
+    "evaluatedJobs": 120
+  },
+  "phases": [
+    {
+      "name": "experimentSubmit",
+      "millis": 663,
+      "note": "单事务插入 120 个 Run 槽位（10 样本 × repeat 12）+ 初始批次 + Run 登记 + Outbox 事件"
+    },
+    {
+      "name": "concurrentExecution",
+      "millis": 3765,
+      "note": "120 个 Run，Worker 并发 16；含领取/心跳/事件上传/封口/Job 创建"
+    },
+    {
+      "name": "concurrentEvaluation",
+      "millis": 1688,
+      "note": "120 个 Job 走完算子并落结果"
+    },
+    {
+      "name": "bulkTraceInsert",
+      "millis": 2013,
+      "note": "4800 条 trace_events 批量写入"
+    },
+    {
+      "name": "reportAggregation",
+      "millis": 91,
+      "note": "Target 1 个，门禁 INCONCLUSIVE"
+    },
+    {
+      "name": "reportAggregationWarm",
+      "millis": 62,
+      "note": "同一实验第二次聚合"
+    }
+  ],
+  "samples": {
+    "trace.pagesPerRun": {
+      "count": 1,
+      "minMs": 0.0,
+      "p50Ms": 0.0,
+      "p95Ms": 0.0,
+      "p99Ms": 0.0,
+      "maxMs": 0.0,
+      "meanMs": 0.0
+    },
+    "trace.eventsPerRunSeen": {
+      "count": 1,
+      "minMs": 0.0,
+      "p50Ms": 0.0,
+      "p95Ms": 0.0,
+      "p99Ms": 0.0,
+      "maxMs": 0.0,
+      "meanMs": 0.0
+    },
+    "trace.page": {
+      "count": 1,
+      "minMs": 34.14,
+      "p50Ms": 34.14,
+      "p95Ms": 34.14,
+      "p99Ms": 34.14,
+      "maxMs": 34.14,
+      "meanMs": 34.14
+    },
+    "run.listPageDeep": {
+      "count": 3,
+      "minMs": 9.64,
+      "p50Ms": 9.66,
+      "p95Ms": 16.38,
+      "p99Ms": 16.38,
+      "maxMs": 16.38,
+      "meanMs": 11.89
+    },
+    "run.execute": {
+      "count": 120,
+      "minMs": 139.43,
+      "p50Ms": 321.61,
+      "p95Ms": 619.2,
+      "p99Ms": 645.96,
+      "maxMs": 655.9,
+      "meanMs": 342.15
+    },
+    "run.listPage": {
+      "count": 5,
+      "minMs": 8.62,
+      "p50Ms": 9.43,
+      "p95Ms": 22.28,
+      "p99Ms": 22.28,
+      "maxMs": 22.28,
+      "meanMs": 11.76
+    },
+    "job.evaluate": {
+      "count": 120,
+      "minMs": 46.78,
+      "p50Ms": 107.71,
+      "p95Ms": 302.57,
+      "p99Ms": 381.05,
+      "maxMs": 437.04,
+      "meanMs": 129.83
+    }
+  },
+  "_note": "原始逐条样本已省略（体积大且可由同一条命令重新生成）。分位统计与全部阶段耗时的保留。"
+}

@@ -4,6 +4,16 @@
 而且漂移后只能靠人眼比对。生成器让"字典是唯一来源"成为可执行的事实，
 CI 用 --check 就能发现有人改了字典却没重新生成。
 
+`--check` 的两种口径（TASK-003 起区分）：
+
+* **实体与枚举**：必须与生成结果逐字节相同。它们没有手写内容的正当理由。
+* **Mapper**：生成的那部分必须原样保留，但允许在文件里追加业务查询方法。
+  业务方法（按 code 查、分页、`FOR UPDATE`、批量插入等）无法从表结构推导出来，
+  事实上一旦有了业务代码就必然存在。早期 `--check` 用的是整文件逐字节比较，
+  于是"加了业务方法"会被判成"改了字典却没重新生成"——它把两种完全不同的情况混成一个错误，
+  结果是这条检查在真实开发中只能被关掉。现在的口径是：**生成的成员必须按原顺序出现**，
+  多余内容不追究；删列、改类型、改主键这类真正的漂移仍然会失败。
+
 用法：
     python tools/gen_java_from_dict.py            # 生成
     python tools/gen_java_from_dict.py --check    # 只比对
@@ -262,7 +272,182 @@ def build_mapper(name: str, table: dict, enum_of: dict) -> tuple[str, str]:
     return f'{package.replace(".", "/")}/{cls}Mapper.java', source
 
 
+def strip_comments(text: str) -> str:
+    """去掉块注释与行注释，只留代码。避免文档里提到的 SQL 片段被当成"已经实现"。"""
+    text = re.sub(r'/\*.*?\*/', ' ', text, flags=re.S)
+    return re.sub(r'//[^\n]*', ' ', text)
+
+
+def normalize(text: str) -> str:
+    """折叠空白并去掉标识符反引号：换行、对齐与引用号是排版，不是内容。
+
+    反引号必须忽略：`required` 是 MySQL 保留字，实际 SQL 里只能写成 `` `required` ``，
+    而字典里存的是列名 `required`。两者指同一个列，比较时不该算差异。
+    """
+    return ' '.join(text.replace('`', '').split())
+
+
+def inline_string_constants(text: str) -> str:
+    # 把 `String X = "a," + " b";` 这类常量内联回所有引用处，再折叠空白。
+    #
+    # 为什么需要这一步：TASK-009 起 AnnotationTaskMapper 用 COLUMNS 常量拼接列清单，
+    # 再与 "SELECT " / FROM 子句用 + 连接，来避免文本块剥掉行尾空白、
+    # 拼出 `SELECTid, ...` 这种编译期看不出的坏 SQL。
+    # 这个写法是刻意的，不应该为了让检查通过而退回文本块——但检查脚本必须能读懂它，
+    # 否则就会把"用了常量"误报成"列清单与字典不一致"（TASK-012 收尾时 CI design Job 会红）。
+    #
+    # 三步：把声明归一为单个字面量 → 折叠字符串拼接中的 "+" → 用声明处的字面量替换引用。
+    # 内联而不是跳过：常量里写错的列名照样会被比对出来，检查强度不降。
+    decl = re.compile(r'String\s+(\w+)\s*=\s*((?:"(?:[^"\\]|\\.)*"\s*\+?\s*)+);')
+
+    text = re.sub(r'/\*.*?\*/', ' ', text, flags=re.S)
+
+    # 1) 收集常量声明：名字 → 拼接起来的字面量值
+    values: dict[str, str] = {}
+    for name, body in decl.findall(text):
+        values[name] = ''.join(re.findall(r'"((?:[^"\\]|\\.)*)"', body))
+    if not values:
+        return text
+
+    # 2) 先把声明本身折叠成单个字面量，后续步骤才好统一处理
+    def collapse(match: re.Match) -> str:
+        return values[match.group(1)] + ' ; '
+
+    text = decl.sub(collapse, text)
+
+    # 3) 用字面量替换所有裸标识符引用（长名优先，避免 COLUMNS 抢在 COLUMNS_X 前面）
+    for name in sorted(values, key=len, reverse=True):
+        text = re.sub(rf'(?<![\w"]){re.escape(name)}(?![\w"])', values[name], text)
+
+    # 4) 清掉只剩空壳的声明，再折叠 Java 字符串拼接。
+    #    注意顺序：必须先把所有字面量/文本块统一成同一种形式再折叠 "+"，
+    #    否则 "SELECT " + COLUMNS + """ FROM """ 这种混合拼接会漏掉跨边界的 "+"。
+    text = re.sub(r'String\s+\w+\s*=\s*"?\s*;', ' ', text)
+    text = text.replace('"""', '"')
+    for _ in range(10):
+        collapsed = re.sub(r'"\s*\+\s*', '', text)
+        collapsed = re.sub(r'\s*\+\s*"', '', collapsed)
+        if collapsed == text:
+            break
+        text = collapsed
+    # 常量值现在是裸文本而非字面量，引号已无意义，统一去掉以免"SELECT " 与 id 之间多出分隔。
+    text = text.replace('"', ' ')
+    return text
+
+
+def mapper_still_matches(actual: str, name: str, table: dict) -> list[str]:
+    """Mapper 是否仍然如实反映字典（返回缺失的片段，空列表表示通过）。
+
+    只校验字典真正约束的事实，不比对整份文件：
+
+    * 插入语句的表名与可写列清单（含顺序）；
+    * 查询语句的列清单（含顺序）与表名；
+    * 主键条件。
+
+    为什么不再要求"生成的内容逐字节保留"：TASK-003 起 Mapper 里有了业务查询方法
+    （按 code 查、分页、`FOR UPDATE`、批量插入），SQL 也按可读性排过版。
+    继续用整文件比较，只会把"加了业务方法"和"改了字典没重新生成"报成同一个错误，
+    最后这条检查只能被关掉——那等于没有检查。
+    """
+    writable = ', '.join(c['name'] for c in table['columns'] if not c.get('generated_expression'))
+    all_columns = ', '.join(c['name'] for c in table['columns'])
+
+    pk = table['primary_key']
+    if pk == ['id']:
+        where = 'WHERE id = #{id}'
+    else:
+        where = 'WHERE ' + ' AND '.join(f'{c} = #{{{camel(c)}}}' for c in pk)
+
+    code = normalize(strip_comments(inline_string_constants(actual)))
+    required = [
+        f'INSERT INTO {name} ({writable})',
+        f'SELECT {all_columns} FROM {name}',
+        where,
+    ]
+    return [snippet for snippet in required if snippet not in code]
+
+
+def self_test() -> int:
+    # 检查器自身的回归测试。
+    #
+    # 为什么必须有：TASK-012 收尾时发现 CI design Job 会红——AnnotationTaskMapper
+    # 在 TASK-009 改用 COLUMNS 常量拼接后，旧版检查器读不懂，把正确的代码报成不一致。
+    # 这种"检查器坏了"和"代码坏了"同样致命，但如果只修代码不改检查器，
+    # 下一个人改 Mapper 写法时又会静默失效。
+    #
+    # 断言两件事：① 用常量的正确写法必须通过；② 常量里写错的列名、顺序、表名仍必须被抓出。
+    # 只有 ① 通过就等于把检查改成"永远绿"，那是更糟的回归。
+    table = {
+        'columns': [
+            {'name': 'id'}, {'name': 'run_id'}, {'name': 'version'},
+            {'name': 'created_at'}, {'name': 'updated_at'},
+        ],
+        'primary_key': ['id'],
+    }
+    columns = 'id, run_id, version, created_at, updated_at'
+    table_name = 'demo_things'
+
+    good = f'''
+        @Mapper
+        public interface DemoThingMapper {{
+            String COLUMNS = "{columns[:len(columns) - len('updated_at')]}"
+                    + " updated_at";
+
+            @Insert("INSERT INTO {table_name} ({columns}) VALUES (...)")
+            int insert(DemoThing entity);
+
+            @Select("SELECT " + COLUMNS + """
+                      FROM {table_name}
+                     WHERE id = #{{id}}
+                    """)
+            DemoThing findById(String id);
+        }}
+    '''
+    literal = f'''
+        @Mapper
+        public interface DemoThingMapper {{
+            @Insert("INSERT INTO {table_name} ({columns}) VALUES (...)")
+            int insert(DemoThing entity);
+
+            @Select("""
+            SELECT {columns}
+              FROM {table_name}
+             WHERE id = #{{id}}
+            """)
+            DemoThing findById(String id);
+        }}
+    '''
+
+    cases: list[tuple[str, str, bool]] = [
+        ('常量拼接的正确写法应通过', good, True),
+        ('字面量写法的正确写法应通过', literal, True),
+        ('常量里少一列必须被抓出', good.replace('updated_at', 'created_at2'), False),
+        ('常量里列顺序错必须被抓出',
+         good.replace('id, run_id, version', 'run_id, id, version'), False),
+        ('插入表名错必须被抓出', good.replace(f'INSERT INTO {table_name}',
+                                            'INSERT INTO other_table'), False),
+        ('主键条件缺失必须被抓出', good.replace('WHERE id = #{id}', 'WHERE 1 = 1'), False),
+    ]
+
+    failures = 0
+    for title, source, should_pass in cases:
+        missing = mapper_still_matches(source, table_name, table)
+        passed = not missing
+        ok = passed == should_pass
+        if not ok:
+            failures += 1
+        verdict = 'OK' if ok else 'FAIL'
+        print(f'[{verdict}] {title}')
+    if failures:
+        print(f'\n自测失败：{failures} 项', file=sys.stderr)
+        return 1
+    print(f'\n自测通过：{len(cases)} 项')
+    return 0
+
+
 def main() -> int:
+    if '--self-test' in sys.argv:
+        return self_test()
     data = json.loads(DICT.read_text(encoding='utf-8'))
     tables = data['tables']
     missing = [t for t in tables if t not in MODULES]
@@ -271,6 +456,7 @@ def main() -> int:
 
     enum_files, enum_of = build_enums(tables)
     files: dict[str, str] = {}
+    mapper_tables: dict[str, tuple[str, dict]] = {}
     for enum_name, source in enum_files.items():
         files[f'com/repopilot/common/state/{enum_name}.java'] = source
     for name, table in tables.items():
@@ -278,14 +464,33 @@ def main() -> int:
         files[path] = source
         path, source = build_mapper(name, table, enum_of)
         files[path] = source
+        mapper_tables[path] = (name, table)
 
     if '--check' in sys.argv:
-        stale = [p for p, s in files.items()
-                 if not (SRC / p).exists() or (SRC / p).read_text(encoding='utf-8') != s]
+        stale: list[str] = []
+        details: list[str] = []
+        for p, s in files.items():
+            target = SRC / p
+            if not target.exists():
+                stale.append(p)
+                details.append(f'{p}: 文件缺失')
+                continue
+            actual = target.read_text(encoding='utf-8')
+            if p in mapper_tables:
+                missing = mapper_still_matches(actual, *mapper_tables[p])
+                if missing:
+                    stale.append(p)
+                    details.append(f'{p}: 缺少 {missing[0][:80]}')
+            elif actual != s:
+                stale.append(p)
+                details.append(f'{p}: 与生成结果不同')
         if stale:
+            for line in details[:8]:
+                print(line, file=sys.stderr)
             print('以下文件与字典不一致：' + ', '.join(sorted(stale)[:8]), file=sys.stderr)
             return 1
-        print(f'OK：{len(files)} 个 Java 文件与字典一致')
+        print(f'OK：{len(files)} 个 Java 文件与字典一致'
+              f'（实体/枚举逐字节比对，{len(mapper_tables)} 个 Mapper 比对列集合/顺序/主键条件）')
         return 0
 
     for relative, source in files.items():

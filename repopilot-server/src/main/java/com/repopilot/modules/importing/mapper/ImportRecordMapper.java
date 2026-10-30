@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -44,4 +45,52 @@ public interface ImportRecordMapper {
               WHERE id = #{id}
             """)
     Optional<ImportRecord> findById(@Param("id") String id);
+
+    // ------------------------------------------------------------------ TASK-005
+
+    /** 每行处理前的回执检查：同批次同物理行只允许一条回执。 */
+    @Select("""
+            SELECT id,
+                   batch_id,
+                   line_no,
+                   record_hash,
+                   status,
+                   dataset_case_id,
+                   run_id,
+                   created_at
+              FROM import_records
+             WHERE batch_id = #{batchId}
+               AND line_no = #{lineNo}
+            """)
+    Optional<ImportRecord> findByBatchAndLine(@Param("batchId") String batchId,
+                                              @Param("lineNo") long lineNo);
+
+    /** 计数重算：一次读出三种状态的行数。 */
+    @Select("""
+            SELECT COALESCE(SUM(CASE WHEN status = 'IMPORTED' THEN 1 ELSE 0 END), 0) AS imported,
+                   COALESCE(SUM(CASE WHEN status = 'REUSED' THEN 1 ELSE 0 END), 0) AS reused,
+                   COALESCE(SUM(CASE WHEN status = 'REJECTED' THEN 1 ELSE 0 END), 0) AS rejected
+              FROM import_records
+             WHERE batch_id = #{batchId}
+            """)
+    com.repopilot.modules.importing.dto.ImportCountsRow countsByStatus(
+            @Param("batchId") String batchId);
+
+    /** 已处理的最大物理行号；恢复时从它之后继续。 */
+    @Select("""
+            SELECT COALESCE(MAX(line_no), 0)
+              FROM import_records
+             WHERE batch_id = #{batchId}
+            """)
+    long maxLineNo(@Param("batchId") String batchId);
+
+    /** 本批次成功建立的 Run 标识（演示与测试用来核对关联）。 */
+    @Select("""
+            SELECT run_id
+              FROM import_records
+             WHERE batch_id = #{batchId}
+               AND run_id IS NOT NULL
+             ORDER BY line_no ASC
+            """)
+    List<String> listRunIds(@Param("batchId") String batchId);
 }

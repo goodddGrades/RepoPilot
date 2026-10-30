@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -44,4 +45,37 @@ public interface ExperimentTargetMapper {
               WHERE id = #{id}
             """)
     Optional<ExperimentTarget> findById(@Param("id") String id);
+
+    // ---- TASK-004：实验目标读取 ----
+
+    @Select("""
+            SELECT id,
+                   experiment_id,
+                   target_key,
+                   display_name,
+                   agent_version_id,
+                   repeat_count,
+                   created_at,
+                   updated_at
+              FROM experiment_targets
+             WHERE experiment_id = #{experimentId}
+             ORDER BY target_key ASC
+            """)
+    List<ExperimentTarget> listByExperiment(@Param("experimentId") String experimentId);
+
+    @Select("""
+            SELECT id,
+                   experiment_id,
+                   target_key,
+                   display_name,
+                   agent_version_id,
+                   repeat_count,
+                   created_at,
+                   updated_at
+              FROM experiment_targets
+             WHERE experiment_id = #{experimentId}
+               AND target_key = #{targetKey}
+            """)
+    Optional<ExperimentTarget> findByKey(@Param("experimentId") String experimentId,
+                                         @Param("targetKey") String targetKey);
 }

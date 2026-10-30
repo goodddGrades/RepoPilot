@@ -13,6 +13,10 @@ dependencies = [
     "uvicorn[standard]==0.54.0",
     "pydantic==2.14.1",
     "pydantic-settings==2.16.0",
+    # RabbitMQ 消费（TASK-013）；仅在 WORKER_RABBITMQ_ENABLED=true 时真正 import
+    "pika==1.3.2",
+    # Redis 分布式限流（TASK-014）
+    "redis==5.2.1",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +27,11 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+# Lua 脚本是运行时资源（不是调试文件），打包时必须带上，
+# 否则安装后 register_script 会读不到文件而在首个请求时失败。
+[tool.setuptools.package-data]
+"app.ratelimit" = ["*.lua"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
