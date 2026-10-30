@@ -249,34 +249,7 @@ docker compose --env-file .env -f deploy/docker-compose.yml down -v
 
 ---
 
-## 6. 已知问题
-
-1. **基础设施未在本机实跑（唯一未完成项）**：本机 Docker 守护进程无法启动（`wsl.exe` 被系统安全策略
-   列入程序黑名单，非权限问题、明确禁止绕过）。因此「compose 真实启动」「Java 连接 MySQL/RabbitMQ」
-   「Flyway 实际执行迁移」「MinIO/RabbitMQ 健康检查」需按 §3.1 与 §4 在具备 Docker 的机器上验收。
-   Compose 配置已通过 `docker compose config` 校验，后端 HTTP 层已在无数据库的降级模式下实测，
-   健康检查如实报告 DOWN 而非伪造 UP。详见
-   [`docs/reviews/task-001-final-acceptance.md`](./docs/reviews/task-001-final-acceptance.md)。
-2. **前端 → 后端代理已端到端验证通过**（2026-10-17 复测）：经 Vite 代理
-   `GET /api/health` 返回真实响应、`GET /api/not-exist` 返回统一 404 结构。
-3. **探针语义已修正**：`/actuator/health/liveness` 只反映进程自身（依赖故障不触发重启），
-   `/actuator/health/readiness` 包含 `db`/`rabbit`（依赖不可用时返回 503）。
-   修复前 readiness 在依赖全挂时仍报 `UP`，属缺陷。
-4. MinIO 健康检查默认 `mc ready local`，可用 `MINIO_HEALTHCHECK` 覆盖为 HTTP 探活；
-   镜像是否含 `mc` 需 `docker compose exec minio mc --version` 实测，做法见
-   [`deploy/README.md`](./deploy/README.md)。
-5. Redis 仅编排实例，Java 侧未接入客户端，`/api/health` 中该组件固定为 `UNKNOWN`（预期行为）。
-6. 后端启动日志会出现 `No MyBatis mapper was found` 警告：本阶段尚未定义任何 Mapper，
-   属预期；TASK-002 引入实体与 Mapper 后消失。
-7. 前端 Element Plus 采用全量引入，构建产物较大（约 1.1 MB / gzip 365 KB）；
-   后续页面增多时再按需引入或做 manualChunks 拆分。
-8. `RepoPilotServerApplicationIT`（4 项）需显式指定 `-Dtest=` 才会被 Maven 选中，
-   且缺 `MYSQL_PASSWORD` 时记为 Skipped；常规 `./mvnw test` 的 19 项**全部是单元测试**。
-
-
----
-
-## 7. 文档
+## 6. 文档
 
 - [`AGENTS.md`](./AGENTS.md)：项目级开发约束（权威顺序、架构红线、命令、交付要求）
 - [`docs/README.md`](./docs/README.md)：**设计基线索引**（架构 / 模块 / 契约 / 评审）
